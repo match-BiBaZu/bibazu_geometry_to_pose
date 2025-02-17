@@ -32,17 +32,27 @@ class PoseVisualizer:
         
         ax.plot_trisurf(vertices[:, 0], vertices[:, 1], vertices[:, 2], triangles=faces, alpha=0.6, edgecolor='k')
         ax.set_title(title)
+        
+        # Normalize the axes
+        max_range = np.array([vertices[:, 0].max() - vertices[:, 0].min(), 
+                              vertices[:, 1].max() - vertices[:, 1].min(), 
+                              vertices[:, 2].max() - vertices[:, 2].min()]).max() / 2.0
+
+        mid_x = (vertices[:, 0].max() + vertices[:, 0].min()) * 0.5
+        mid_y = (vertices[:, 1].max() + vertices[:, 1].min()) * 0.5
+        mid_z = (vertices[:, 2].max() + vertices[:, 2].min()) * 0.5
+
+        ax.set_xlim(mid_x - max_range, mid_x + max_range)
+        ax.set_ylim(mid_y - max_range, mid_y + max_range)
+        ax.set_zlim(mid_z - max_range, mid_z + max_range)
 
     def visualize_rotations(self):
         """
         Generates a separate plot for each valid rotation applied to the original and convex hull meshes.
         """
-        num_plots = len(self.valid_rotations)
-        fig = plt.figure(figsize=(10, num_plots * 5))
-        
-        for i, (index, quat) in enumerate(self.valid_rotations):
-            ax = fig.add_subplot(num_plots, 1, i + 1, projection='3d')
+        for index, quat in self.valid_rotations:
+            fig = plt.figure(figsize=(10, 5))
+            ax = fig.add_subplot(111, projection='3d')
             self.plot_mesh(ax, self.original_mesh, f'Original Model - Rotation {index}', rotation=quat)
-            self.plot_mesh(ax, self.convex_hull_mesh, f'Convex Hull - Rotation {index}', rotation=quat)
-        
-        plt.show()
+            #self.plot_mesh(ax, self.convex_hull_mesh, f'Convex Hull - Rotation {index}', rotation=quat)
+            plt.show()

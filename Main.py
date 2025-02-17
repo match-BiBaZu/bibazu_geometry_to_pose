@@ -1,5 +1,5 @@
 from pathlib import Path
-import convex_hull_extractor
+from convex_hull_extractor import convex_hull_extractor
 import PoseFinder as pf
 import PoseVisualizer as pv
 #from STLtoOBJConverter import stl_to_obj_converter

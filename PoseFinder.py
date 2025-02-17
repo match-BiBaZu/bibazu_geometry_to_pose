@@ -37,13 +37,28 @@ class PoseFinder:
         face_normals = self.find_normal_vectors()
         
         valid_rotations = []
-        candidate_rotations = [0,0,0,1]  # Initialize with the identity quaternion
+        candidate_rotations = []  # Initialize with the identity quaternion
+
+        # the first row of valid rotations is the identity quaternion paired with pose count 0
+        valid_rotations.append((0, np.array([1, 0, 0, 0])))
 
         # Generate rotations by aligning every face normal with every other face normal
         for i, normal_1 in enumerate(face_normals):
             for j, normal_2 in enumerate(face_normals):
                 if i != j and not np.allclose(normal_1, normal_2):  # Avoid redundant checks
-                    rotation_vector = np.cross(normal_1, normal_2)
+
+                    # Step 1: Calculate the axis of rotation (cross product)
+                    axis_of_rotation = np.cross(normal_1, normal_2)
+
+                    # Step 2: Calculate the angle between vec1 and vec2 (dot product)
+                    cos_angle = np.dot(normal_1, normal_2) / (np.linalg.norm(normal_1) * np.linalg.norm(normal_2))
+                    angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))  # Clip for numerical stability
+
+                    # Step 3: Construct the rotation vector (axis * angle)
+                    rotation_vector = axis_of_rotation * angle
+
+
+                    #rotation_vector = np.cross(normal_1, normal_2)
                     if np.linalg.norm(rotation_vector) > 1e-6:  # Ensure valid rotation
                         rotation = R.from_rotvec(rotation_vector)
                         candidate_rotations.append(rotation)
@@ -62,7 +77,9 @@ class PoseFinder:
             y_side = np.sign(rotated_vertices[:, 1])
 
             if np.sum(on_x_plane & on_y_plane) >= 3 & np.all(x_side == x_side[0]) & np.all(y_side == y_side[0]):
-                valid_rotations.append((count, rotation.as_quat()))
+                quat = rotation.as_quat()
+                quat_wxyz = np.array([quat[1], quat[2], quat[3], quat[0]])  # Convert to WXYZ format
+                valid_rotations.append((count, quat_wxyz))
                 count += 1
 
         return valid_rotations
