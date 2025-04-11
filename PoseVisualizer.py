@@ -22,7 +22,7 @@ class PoseVisualizer:
         # Store valid rotations
         self.valid_rotations = valid_rotations
 
-    def plot_mesh(self, ax, mesh, title, rotation=None):
+    def plot_mesh(self, ax, mesh, title, quat=None):
         """
         Plots a 3D mesh with an optional rotation.
         :param ax: Matplotlib 3D axis.
@@ -33,10 +33,9 @@ class PoseVisualizer:
         vertices = np.array(mesh.vertices)
         faces = np.array(mesh.faces)
         
-        if rotation is not None:
-            rot = R.from_quat(rotation)
-            #rot = R.from_rotvec(rotation)
-            vertices = rot.apply(vertices)
+        if quat is not None:
+            rotation = R.from_quat(quat)
+            vertices = rotation.apply(vertices)
         
         ax.plot_trisurf(vertices[:, 0], vertices[:, 1], vertices[:, 2], triangles=faces, alpha=0.6, edgecolor='k')
         ax.set_title(title)
@@ -61,6 +60,5 @@ class PoseVisualizer:
         for index, rot in self.valid_rotations:
             fig = plt.figure(figsize=(10, 5))
             ax = fig.add_subplot(111, projection='3d')
-            self.plot_mesh(ax, self.original_mesh, f'Original Model - Rotation {index}', rotation=rot)
-            #self.plot_mesh(ax, self.convex_hull_mesh, f'Convex Hull - Rotation {index}', rotation=rot)
+            self.plot_mesh(ax, self.original_mesh, f'Original Model - Rotation {index}', quat=rot)
             plt.show()

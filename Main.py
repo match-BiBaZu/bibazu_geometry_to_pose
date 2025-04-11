@@ -26,8 +26,11 @@ obj_convex_hull_extractor(str(workpiece_path / (workpiece_name + '.obj')), str(w
 # Initialize the PoseFinder with the convex hull OBJ file and define a tolerance for grouping rotations
 pose_finder = pf.PoseFinder(str(workpiece_path / (workpiece_name + '_convex_hull.obj')), str(workpiece_path / (workpiece_name + '.obj')),1e-5)
 
+# Find candidate rotations based on face normals
+candidate_rotations = pose_finder.find_candidate_rotations_by_face_normals()
+
 # Find the valid poses of the workpiece
-valid_rotations = pose_finder.find_valid_rotations()
+valid_rotations = pose_finder.find_valid_rotations(candidate_rotations)
 
 # Find unique poses by considering symmetry
 valid_unique_rotations = pose_finder.symmetry_handler(valid_rotations)

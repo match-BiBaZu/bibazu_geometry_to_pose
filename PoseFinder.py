@@ -20,66 +20,99 @@ class PoseFinder:
         #Initailze a numerical tolerance for grouping
         self.tolerance = tolerance
     
-    def find_valid_rotations(self):
+    def find_candidate_rotations_by_face_normals(self):
         """
-        Computes valid rotations where at least three external vertices of the convex hull
-        would intersect two 90-degree intersecting planes, ensuring the object is not cut by the planes.
-        Uses pairwise face normal alignments instead of just aligning with coordinate axes.
-        :return: A list of valid rotations as numpy arrays.
+        Computes candidate rotations by aligning every face normal with every other face normal.
+        :return: A list of candidate rotations as quaternions.
         """
-        vertices = np.array(self.convex_hull_mesh.vertices)
         face_normals = self.convex_hull_mesh.face_normals
-        
-        valid_rotations = []
-        candidate_rotations = []  # Initialize with the identity quaternion
+        candidate_rotations = []
 
-        # the first row of valid rotations is the identity quaternion paired with pose count 0
-        valid_rotations.append((0, np.array([1.0, 0.0, 0.0, 0.0])))
-        #valid_rotations.append((0, np.array([0.0, 0.0, 0.0])))
+        # Add the identity quaternion as the first candidate rotation
+        candidate_rotations.append(np.array([1.0, 0.0, 0.0, 0.0]))
 
         # Generate rotations by aligning every face normal with every other face normal
         for i, normal_1 in enumerate(face_normals):
             for j, normal_2 in enumerate(face_normals):
                 if i != j and not np.allclose(normal_1, normal_2):  # Avoid redundant checks
-
                     # Step 1: Calculate the axis of rotation (cross product)
                     axis_of_rotation = np.cross(normal_1, normal_2)
 
-                    # Step 2: Calculate the angle between vec1 and vec2 (dot product)
+                    # Step 2: Calculate the angle between the normals (dot product)
                     cos_angle = np.dot(normal_1, normal_2) / (np.linalg.norm(normal_1) * np.linalg.norm(normal_2))
                     angle = np.arccos(np.clip(cos_angle, -1.0, 1.0))  # Clip for numerical stability
 
                     # Step 3: Construct the rotation vector (axis * angle)
-                    rotation_vector = axis_of_rotation * angle
+                    if np.linalg.norm(axis_of_rotation) > 1e-6:  # Ensure valid axis
+                        axis_of_rotation = axis_of_rotation / np.linalg.norm(axis_of_rotation)
+                        rotation = R.from_rotvec(axis_of_rotation * angle)
+                        candidate_rotations.append(rotation.as_quat())
 
-                    if np.linalg.norm(rotation_vector) > 1e-6:  # Ensure valid rotation
-                        rotation = R.from_rotvec(rotation_vector)
-                        candidate_rotations.append(rotation)
+        return candidate_rotations
+    
+    def find_candidate_rotations_by_fibonacci_sphere(self, axis_samples=20, angle_samples=4):
+        """
+        Generate a list of candidate rotation quaternions.
+        First entry is the identity quaternion.
+        :param axis_samples: Number of candidate axes (from Fibonacci sphere).
+        :param angle_samples: Number of rotation orders to generate (2 to 2+angle_samples).
+        :return: List of quaternions (w, x, y, z).
+        """
+        from trimesh.transformations import quaternion_about_axis
+        candidates = [(1.0, 0.0, 0.0, 0.0)]  # Identity rotation
 
-        count = 1 # Start counting from 1 as 0 is reserved for the identity quaternion
+        # Fibonacci sphere for axis sampling
+        i = np.arange(0, axis_samples)
+        phi = np.arccos(1 - 2*(i + 0.5)/axis_samples)
+        theta = np.pi * (1 + 5**0.5) * (i + 0.5)
+        axes = np.stack([
+            np.sin(phi) * np.cos(theta),
+            np.sin(phi) * np.sin(theta),
+            np.cos(phi)
+        ], axis=1)
 
-        for rotation in candidate_rotations:
+        for axis in axes:
+            axis = axis / np.linalg.norm(axis)
+            for order in range(2, angle_samples + 2):  # e.g. 2, 3, 4, ...
+                angle = 2 * np.pi / order
+                for i in range(1, order):  # Skip 0 rotation (identity)
+                    quat = quaternion_about_axis(i * angle, axis)
+                    candidates.append(tuple(quat))  # (w, x, y, z)
+
+        return candidates
+
+
+    def find_valid_rotations(self, candidate_rotations):
+        """
+        Filters candidate rotations to find valid rotations where at least three external vertices
+        of the convex hull would intersect two 90-degree intersecting planes.
+        :param candidate_rotations: A list of candidate rotations as quaternions.
+        :return: A list of valid rotations as tuples (index, quaternion).
+        """
+        vertices = np.array(self.convex_hull_mesh.vertices)
+        valid_rotations = []
+
+        # Add the identity quaternion as the first valid rotation
+        valid_rotations.append((0, np.array([1.0, 0.0, 0.0, 0.0])))
+
+        count = 1  # Start counting from 1 as 0 is reserved for the identity quaternion
+
+        for quat in candidate_rotations:
+            rotation = R.from_quat(quat)
             rotated_vertices = rotation.apply(vertices)
 
             # --- x–y plane check (same z) ---
             binned_z = np.round(rotated_vertices[:, 2] / self.tolerance) * self.tolerance
-            unique_z, z_counts = np.unique(binned_z, return_counts=True)
-            min_z = np.min(unique_z)
+            min_z = np.min(binned_z)
             x_plane_count = np.count_nonzero(binned_z == min_z) >= 3
 
             # --- y–z plane check (same x) ---
             binned_x = np.round(rotated_vertices[:, 0] / self.tolerance) * self.tolerance
-            unique_x, x_counts = np.unique(binned_x, return_counts=True)
-            min_x = np.min(unique_x)
+            min_x = np.min(binned_x)
             y_plane_count = np.count_nonzero(binned_x == min_x) >= 2
 
-            if (
-                    True
-                    #np.count_nonzero(binned_z == min_z) >= 3 
-                    #and np.count_nonzero(binned_x == min_x) >= 2
-                ):
-                valid_rotations.append((count, rotation.as_quat()))
-                #valid_rotations.append((count, rotation.as_rotvec()))
+            if True: #x_plane_count and y_plane_count:
+                valid_rotations.append((count, quat))
                 count += 1
 
         return valid_rotations
@@ -103,7 +136,6 @@ class PoseFinder:
                 #rotation = R.from_rotvec(rot)
                 rotation = R.from_quat(rot)
                 rotated_vertices = rotation.apply(self.mesh.vertices)
-                #previous_rotation = R.from_rotvec(list(unique_rotations.keys())[list(unique_rotations.values()).index(index)])
                 previous_rotation = R.from_quat(list(unique_rotations.keys())[list(unique_rotations.values()).index(index)])
                 previous_rotated_vertices = previous_rotation.apply(self.mesh.vertices)
 
