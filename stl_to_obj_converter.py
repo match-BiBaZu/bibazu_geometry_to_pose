@@ -1,6 +1,13 @@
 import bpy
 
 def stl_to_obj_converter(stl_filepath, obj_filepath, scale=0.01):
+    """
+    Convert an STL file to OBJ format using Blender's Python API.
+    :param stl_filepath: Path to the input STL file.
+    :param obj_filepath: Path to the output OBJ file.
+    :param scale: Scale factor for the conversion (default is 0.01).
+    """
+
     # Clear existing mesh data
     bpy.ops.wm.read_factory_settings(use_empty=True)
 

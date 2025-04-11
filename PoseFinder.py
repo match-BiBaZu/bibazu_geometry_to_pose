@@ -3,28 +3,22 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 class PoseFinder:
-    def __init__(self, convex_hull_obj_file: str):
+    def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-5):
         """
         Initialize the PoseFinder with the convex hull OBJ file.
         :param convex_hull_obj_file: Path to the convex hull OBJ file.
         """
-        self.convex_hull_obj_file = convex_hull_obj_file
-        self.mesh = trimesh.load_mesh(self.convex_hull_obj_file)
-    
-    def find_centroid(self):
-        """
-        Computes the centroid of the convex hull.
-        :return: Centroid coordinates as a numpy array.
-        """
-        return self.mesh.centroid
-    
-    def find_normal_vectors(self):
-        """
-        Computes the normal unit vectors to each face of the convex hull originating from the centroid.
-        :return: A list of normal vectors as numpy arrays.
-        """
-        normals = self.mesh.face_normals
-        return normals
+        self.mesh = trimesh.load_mesh(self_obj_file)
+        self.convex_hull_mesh = trimesh.load_mesh(convex_hull_obj_file)
+
+        # Ensure the mesh is centered around the centroid of the convex hull
+        centroid = self.convex_hull_mesh.centroid
+
+        self.convex_hull_mesh.apply_translation(-centroid)
+        self.mesh.apply_translation(-centroid)
+
+        #Initailze a numerical tolerance for grouping
+        self.tolerance = tolerance
     
     def find_valid_rotations(self):
         """
@@ -33,14 +27,15 @@ class PoseFinder:
         Uses pairwise face normal alignments instead of just aligning with coordinate axes.
         :return: A list of valid rotations as numpy arrays.
         """
-        vertices = np.array(self.mesh.vertices)
-        face_normals = self.find_normal_vectors()
+        vertices = np.array(self.convex_hull_mesh.vertices)
+        face_normals = self.convex_hull_mesh.face_normals
         
         valid_rotations = []
         candidate_rotations = []  # Initialize with the identity quaternion
 
         # the first row of valid rotations is the identity quaternion paired with pose count 0
-        valid_rotations.append((0, np.array([1, 0, 0, 0])))
+        valid_rotations.append((0, np.array([1.0, 0.0, 0.0, 0.0])))
+        #valid_rotations.append((0, np.array([0.0, 0.0, 0.0])))
 
         # Generate rotations by aligning every face normal with every other face normal
         for i, normal_1 in enumerate(face_normals):
@@ -57,8 +52,6 @@ class PoseFinder:
                     # Step 3: Construct the rotation vector (axis * angle)
                     rotation_vector = axis_of_rotation * angle
 
-
-                    #rotation_vector = np.cross(normal_1, normal_2)
                     if np.linalg.norm(rotation_vector) > 1e-6:  # Ensure valid rotation
                         rotation = R.from_rotvec(rotation_vector)
                         candidate_rotations.append(rotation)
@@ -68,36 +61,56 @@ class PoseFinder:
         for rotation in candidate_rotations:
             rotated_vertices = rotation.apply(vertices)
 
-            # Check if at least three vertices lie on both intersecting planes (x=0 and y=0)
-            on_x_plane = np.isclose(rotated_vertices[:, 0], 0)
-            on_y_plane = np.isclose(rotated_vertices[:, 1], 0)
+            # --- x–y plane check (same z) ---
+            binned_z = np.round(rotated_vertices[:, 2] / self.tolerance) * self.tolerance
+            unique_z, z_counts = np.unique(binned_z, return_counts=True)
+            min_z = np.min(unique_z)
+            x_plane_count = np.count_nonzero(binned_z == min_z) >= 3
 
-            # Ensure the object is not cut by checking if all vertices remain on one side of each plane
-            x_side = np.sign(rotated_vertices[:, 0])
-            y_side = np.sign(rotated_vertices[:, 1])
+            # --- y–z plane check (same x) ---
+            binned_x = np.round(rotated_vertices[:, 0] / self.tolerance) * self.tolerance
+            unique_x, x_counts = np.unique(binned_x, return_counts=True)
+            min_x = np.min(unique_x)
+            y_plane_count = np.count_nonzero(binned_x == min_x) >= 2
 
-            if np.sum(on_x_plane & on_y_plane) >= 3 & np.all(x_side == x_side[0]) & np.all(y_side == y_side[0]):
-                quat = rotation.as_quat()
-                quat_wxyz = np.array([quat[1], quat[2], quat[3], quat[0]])  # Convert to WXYZ format
-                valid_rotations.append((count, quat_wxyz))
+            if (
+                    True
+                    #np.count_nonzero(binned_z == min_z) >= 3 
+                    #and np.count_nonzero(binned_x == min_x) >= 2
+                ):
+                valid_rotations.append((count, rotation.as_quat()))
+                #valid_rotations.append((count, rotation.as_rotvec()))
                 count += 1
 
         return valid_rotations
     
     def symmetry_handler(self, rotations):
         """
-        EDIT WITH THE BOP SYMMETRIES STUFF!!!! LOOKS WEIRD
         Handles symmetry constraints by assigning duplicate rotations the same index as the first detected instance.
-        :param rotations: List of tuples (index, valid rotation quaternion).
-        :return: List of tuples (assigned index, valid rotation quaternion).
+        Also removes candidate rotations where all vertices align with a previous candidate rotation within a desired tolerance.
+        :param rotations: List of tuples (index, valid rotation vector).
+        :return: List of tuples (assigned index, valid rotation vector).
         """
         unique_rotations = {}
         assigned_rotations = []
 
-        for index, quat in rotations:
-            rounded_quat = tuple(np.round(quat, decimals=5))  # Round to prevent numerical noise
-            if rounded_quat not in unique_rotations:
-                unique_rotations[rounded_quat] = index
-            assigned_rotations.append((unique_rotations[rounded_quat], quat))
-        
+        for index, rot in rotations:
+            rounded_rot = tuple(np.round(rot, decimals=5))  # Round to prevent numerical noise
+            if rounded_rot not in unique_rotations:  # Remove duplicates
+                unique_rotations[rounded_rot] = index
+
+                # Check if the rotation aligns all vertices with a previous candidate rotation
+                #rotation = R.from_rotvec(rot)
+                rotation = R.from_quat(rot)
+                rotated_vertices = rotation.apply(self.mesh.vertices)
+                #previous_rotation = R.from_rotvec(list(unique_rotations.keys())[list(unique_rotations.values()).index(index)])
+                previous_rotation = R.from_quat(list(unique_rotations.keys())[list(unique_rotations.values()).index(index)])
+                previous_rotated_vertices = previous_rotation.apply(self.mesh.vertices)
+
+                if np.allclose(rotated_vertices, previous_rotated_vertices, atol=self.tolerance):
+                    #continue  # Skip this rotation as it aligns with a previous one
+                    assigned_rotations.append((index, rot))
+                else:
+                    assigned_rotations.append((index, rot))
+
         return assigned_rotations

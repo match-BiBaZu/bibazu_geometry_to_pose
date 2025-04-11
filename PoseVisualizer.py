@@ -13,6 +13,13 @@ class PoseVisualizer:
         """
         self.original_mesh = trimesh.load_mesh(original_obj_file)
         self.convex_hull_mesh = trimesh.load_mesh(convex_hull_obj_file)
+
+        # Ensure the meshes are centered around the centroid of the convex hull
+        centroid = self.convex_hull_mesh.centroid
+        self.original_mesh.apply_translation(-centroid)
+        self.convex_hull_mesh.apply_translation(-centroid)
+
+        # Store valid rotations
         self.valid_rotations = valid_rotations
 
     def plot_mesh(self, ax, mesh, title, rotation=None):
@@ -28,6 +35,7 @@ class PoseVisualizer:
         
         if rotation is not None:
             rot = R.from_quat(rotation)
+            #rot = R.from_rotvec(rotation)
             vertices = rot.apply(vertices)
         
         ax.plot_trisurf(vertices[:, 0], vertices[:, 1], vertices[:, 2], triangles=faces, alpha=0.6, edgecolor='k')
@@ -50,9 +58,9 @@ class PoseVisualizer:
         """
         Generates a separate plot for each valid rotation applied to the original and convex hull meshes.
         """
-        for index, quat in self.valid_rotations:
+        for index, rot in self.valid_rotations:
             fig = plt.figure(figsize=(10, 5))
             ax = fig.add_subplot(111, projection='3d')
-            self.plot_mesh(ax, self.original_mesh, f'Original Model - Rotation {index}', rotation=quat)
-            #self.plot_mesh(ax, self.convex_hull_mesh, f'Convex Hull - Rotation {index}', rotation=quat)
+            self.plot_mesh(ax, self.original_mesh, f'Original Model - Rotation {index}', rotation=rot)
+            #self.plot_mesh(ax, self.convex_hull_mesh, f'Convex Hull - Rotation {index}', rotation=rot)
             plt.show()

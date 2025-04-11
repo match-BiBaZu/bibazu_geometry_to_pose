@@ -2,7 +2,7 @@ import trimesh
 import numpy as np
 from scipy.spatial import ConvexHull
 
-def convex_hull_extractor(input_obj_file: str, output_obj_file: str):
+def obj_convex_hull_extractor(input_obj_file: str, output_obj_file: str):
     """
     Extracts the convex hull of the 3D model and saves it as an OBJ file.
     """
@@ -16,9 +16,9 @@ def convex_hull_extractor(input_obj_file: str, output_obj_file: str):
     hull = ConvexHull(vertices)
     
     # Extract convex hull vertices and faces
-    hull_vertices = vertices[hull.vertices]
+    hull_vertices = hull.points
     hull_faces = hull.simplices
-    
+
     # Create a new trimesh object
     convex_hull_mesh = trimesh.Trimesh(vertices=hull_vertices, faces=hull_faces)
     
