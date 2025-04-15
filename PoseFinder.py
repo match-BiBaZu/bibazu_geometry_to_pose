@@ -101,17 +101,22 @@ class PoseFinder:
             rotation = R.from_quat(quat)
             rotated_vertices = rotation.apply(vertices)
 
-            # --- x–y plane check (same z) ---
+            # --- Bin by z ---
             binned_z = np.round(rotated_vertices[:, 2] / self.tolerance) * self.tolerance
             min_z = np.min(binned_z)
+            min_z_indices = np.where(binned_z == min_z)[0]
+
+            # --- x–y plane check (same z) ---
             x_plane_count = np.count_nonzero(binned_z == min_z) >= 3
 
-            # --- y–z plane check (same x) ---
-            binned_x = np.round(rotated_vertices[:, 0] / self.tolerance) * self.tolerance
+            # --- x-plane for y–z: check for min_x in each x-bin ---
+            binned_x = np.round(rotated_vertices[min_z_indices, 0] / self.tolerance) * self.tolerance
             min_x = np.min(binned_x)
+
+            # --- y–z plane check for the values that passed the x-y plane check (same x) ---
             y_plane_count = np.count_nonzero(binned_x == min_x) >= 2
 
-            if True: #x_plane_count and y_plane_count:
+            if x_plane_count and y_plane_count:
                 valid_rotations.append((count, quat))
                 count += 1
 
@@ -140,8 +145,7 @@ class PoseFinder:
                 previous_rotated_vertices = previous_rotation.apply(self.mesh.vertices)
 
                 if np.allclose(rotated_vertices, previous_rotated_vertices, atol=self.tolerance):
-                    #continue  # Skip this rotation as it aligns with a previous one
-                    assigned_rotations.append((index, rot))
+                    continue  # Skip this rotation as it aligns with a previous one
                 else:
                     assigned_rotations.append((index, rot))
 
