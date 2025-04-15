@@ -122,6 +122,23 @@ class PoseFinder:
 
         return valid_rotations
     
+    def duplicate_remover(self, rotations):
+        """
+        Handles duplicate rotations by assigning them the same index as the first detected instance.
+        :param rotations: List of tuples (index, valid rotation vector).
+        :return: List of tuples (assigned index, valid rotation vector).
+        """
+        unique_rotations = {}
+        assigned_rotations = []
+
+        for index, rot in rotations:
+            rounded_rot = tuple(np.round(rot, decimals=5))  # Round to prevent numerical noise
+            if rounded_rot not in unique_rotations:
+                unique_rotations[rounded_rot] = index
+                assigned_rotations.append((index, rot))
+        
+        return assigned_rotations
+    
     def symmetry_handler(self, rotations):
         """
         Handles symmetry constraints by assigning duplicate rotations the same index as the first detected instance.
@@ -133,7 +150,7 @@ class PoseFinder:
         assigned_rotations = []
 
         for index, rot in rotations:
-            rounded_rot = tuple(np.round(rot, decimals=5))  # Round to prevent numerical noise
+            rounded_rot = tuple(np.round(rot, decimals=np.log10(1/self.tolerance)))  # Round to prevent numerical noise
             if rounded_rot not in unique_rotations:  # Remove duplicates
                 unique_rotations[rounded_rot] = index
 
@@ -145,7 +162,8 @@ class PoseFinder:
                 previous_rotated_vertices = previous_rotation.apply(self.mesh.vertices)
 
                 if np.allclose(rotated_vertices, previous_rotated_vertices, atol=self.tolerance):
-                    continue  # Skip this rotation as it aligns with a previous one
+                    #continue  # Skip this rotation as it aligns with a previous one
+                    assigned_rotations.append((index, rot))
                 else:
                     assigned_rotations.append((index, rot))
 
