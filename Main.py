@@ -12,7 +12,7 @@ script_dir = Path(__file__).parent
 workpiece_path =  script_dir / 'Workpieces'
 
 # Get the workpiece name you want to find poses for
-workpiece_name = 'Teil_1'
+workpiece_name = 'Teil_3'
 
 # Convert the STL file to an OBJ file
 stl_to_obj_converter(str(workpiece_path / (workpiece_name + '.STL')), str(workpiece_path / (workpiece_name + '.obj')),1)
@@ -32,11 +32,14 @@ candidate_rotations = pose_finder.find_candidate_rotations_by_face_normals()
 # Find the valid poses of the workpiece
 valid_rotations = pose_finder.find_valid_rotations(candidate_rotations)
 
-# Find unique poses by considering symmetry
+# Remove duplicate rotations 
 valid_unique_rotations = pose_finder.duplicate_remover(valid_rotations)
 
+# Find unique poses by considering symmetry
+symmetrically_unique_rotations = pose_finder.symmetry_handler(valid_unique_rotations)
+
 # Initialize the PoseVisualizer with the original and convex hull OBJ files and valid rotations
-pose_visualizer = pv.PoseVisualizer(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '_convex_hull.obj')), valid_unique_rotations)
+pose_visualizer = pv.PoseVisualizer(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '_convex_hull.obj')), symmetrically_unique_rotations)
 
 # Visualize the valid poses
 pose_visualizer.visualize_rotations()

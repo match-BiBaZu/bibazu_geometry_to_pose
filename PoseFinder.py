@@ -11,6 +11,13 @@ class PoseFinder:
         self.mesh = trimesh.load_mesh(self_obj_file)
         self.convex_hull_mesh = trimesh.load_mesh(convex_hull_obj_file)
 
+        # Check to ensure that the mesh and convex hull meshes are not empty
+        if self.mesh.vertices is None or len(self.mesh.vertices) == 0:
+                    raise ValueError("Mesh vertices are not initialized or empty.")
+        
+        if self.convex_hull_mesh.vertices is None or len(self.convex_hull_mesh.vertices) == 0:
+                    raise ValueError("Convex hull mesh vertices are not initialized or empty.")
+
         # Ensure the mesh is centered around the centroid of the convex hull
         centroid = self.convex_hull_mesh.centroid
 
@@ -124,47 +131,57 @@ class PoseFinder:
     
     def duplicate_remover(self, rotations):
         """
-        Handles duplicate rotations by assigning them the same index as the first detected instance.
-        :param rotations: List of tuples (index, valid rotation vector).
-        :return: List of tuples (assigned index, valid rotation vector).
+        Handles duplicate rotations by removing rotations that are too close to each other.
+        :param rotations: List of tuples (pose, valid rotation vector).
+        :return: List of tuples (assigned pose, valid rotation vector).
         """
         unique_rotations = {}
         assigned_rotations = []
+        pose_count = 0
 
-        for index, rot in rotations:
-            rounded_rot = tuple(np.round(rot, decimals=5))  # Round to prevent numerical noise
-            if rounded_rot not in unique_rotations:
-                unique_rotations[rounded_rot] = index
-                assigned_rotations.append((index, rot))
+        for index, quat in rotations:
+            rounded_quat = tuple(np.round(quat, decimals=int(np.log10(1/self.tolerance))))  # Round to prevent numerical noise
+            one_zero_rounded_quat = tuple(0.0 if abs(x) < self.tolerance else x for x in rounded_quat)  # Ensure all zeros are positive
+            if one_zero_rounded_quat not in unique_rotations:
+                unique_rotations[one_zero_rounded_quat] = index
+                assigned_rotations.append((pose_count, one_zero_rounded_quat))
+                pose_count += 1
         
         return assigned_rotations
     
     def symmetry_handler(self, rotations):
         """
-        Handles symmetry constraints by assigning duplicate rotations the same index as the first detected instance.
-        Also removes candidate rotations where all vertices align with a previous candidate rotation within a desired tolerance.
-        :param rotations: List of tuples (index, valid rotation vector).
-        :return: List of tuples (assigned index, valid rotation vector).
+        Handles symmetry constraints by sorting by pose and assigning the same pose to symmetrically equivalent rotations.
+        This is done by checking if the rotation has multiple representations equivalent by rotational symmetry.
+        :param rotations: List of tuples (pose, valid rotation vector).
+        :return: List of tuples (assigned pose, valid rotation vector).
         """
-        unique_rotations = {}
         assigned_rotations = []
+        assymetric_pose_count = 0
 
-        for index, rot in rotations:
-            rounded_rot = tuple(np.round(rot, decimals=np.log10(1/self.tolerance)))  # Round to prevent numerical noise
-            if rounded_rot not in unique_rotations:  # Remove duplicates
-                unique_rotations[rounded_rot] = index
+        for index, quat in rotations:
+            # Check if the rotation is already assigned to a pose
+            if not any(np.array_equal(quat, assigned_quat) for _, assigned_quat in assigned_rotations):
+                assigned_rotations.append((assymetric_pose_count, quat))
 
-                # Check if the rotation aligns all vertices with a previous candidate rotation
-                #rotation = R.from_rotvec(rot)
-                rotation = R.from_quat(rot)
+                # Check if the rotation has multiple representations equivalent by rotational symmetry
+                rotation = R.from_quat(quat)
                 rotated_vertices = rotation.apply(self.mesh.vertices)
-                previous_rotation = R.from_quat(list(unique_rotations.keys())[list(unique_rotations.values()).index(index)])
-                previous_rotated_vertices = previous_rotation.apply(self.mesh.vertices)
 
-                if np.allclose(rotated_vertices, previous_rotated_vertices, atol=self.tolerance):
-                    #continue  # Skip this rotation as it aligns with a previous one
-                    assigned_rotations.append((index, rot))
-                else:
-                    assigned_rotations.append((index, rot))
+                for check_index, check_quat in rotations:
+                    if check_index != index:
+                        check_rotation = R.from_quat(check_quat)
+                        check_rotated_vertices = check_rotation.apply(self.mesh.vertices)
+
+                        sorted_rotated_vertices = np.sort(rotated_vertices, axis=0)
+                        sorted_check_rotated_vertices = np.sort(check_rotated_vertices, axis=0)
+
+                        is_close = np.allclose(sorted_rotated_vertices, sorted_check_rotated_vertices, atol=self.tolerance)
+                        
+                        if is_close:
+                            # Append the rotation with the same pose count if it is rotationally symmetric
+                            assigned_rotations.append((assymetric_pose_count, check_quat))
+                
+                assymetric_pose_count += 1
 
         return assigned_rotations

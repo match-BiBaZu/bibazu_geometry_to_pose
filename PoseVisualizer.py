@@ -55,10 +55,24 @@ class PoseVisualizer:
 
     def visualize_rotations(self):
         """
-        Generates a separate plot for each valid rotation applied to the original and convex hull meshes.
+        Generates one plot per unique pose index, with all associated rotations visualized in the same figure.
         """
+        poses_dict = {}
         for index, rot in self.valid_rotations:
+            if index not in poses_dict:
+                poses_dict[index] = []
+            poses_dict[index].append(rot)
+
+        for index, quats in poses_dict.items():
             fig = plt.figure(figsize=(10, 5))
             ax = fig.add_subplot(111, projection='3d')
-            self.plot_mesh(ax, self.original_mesh, f'Original Model - Rotation {index}', quat=rot)
+            for i, quat in enumerate(quats):
+                self.plot_mesh(ax, self.original_mesh, f'Pose {index} - Rot {i+1}', quat=quat)
+
+            # Add all quaternions in one combined legend
+            legend_text = "\n".join([f"Rot {i+1}: {np.round(q, 4)}" for i, q in enumerate(quats)])
+            ax.text2D(0.05, 0.95, legend_text, transform=ax.transAxes, fontsize='small', verticalalignment='top')
+
+            plt.title(f'All rotations for Pose {index}')
+            plt.tight_layout()
             plt.show()
