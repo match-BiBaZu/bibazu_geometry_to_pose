@@ -33,10 +33,8 @@ class PoseFinder:
         :return: A list of candidate rotations as quaternions.
         """
         face_normals = self.convex_hull_mesh.face_normals
-        candidate_rotations = []
-
-        # Add the identity quaternion as the first candidate rotation
-        candidate_rotations.append(np.array([1.0, 0.0, 0.0, 0.0]))
+        candidate_rotations = [(0, np.array([1.0, 0.0, 0.0, 0.0]))]
+        candidate_count = 1
 
         # Generate rotations by aligning every face normal with every other face normal
         for i, normal_1 in enumerate(face_normals):
@@ -53,7 +51,8 @@ class PoseFinder:
                     if np.linalg.norm(axis_of_rotation) > 1e-6:  # Ensure valid axis
                         axis_of_rotation = axis_of_rotation / np.linalg.norm(axis_of_rotation)
                         rotation = R.from_rotvec(axis_of_rotation * angle)
-                        candidate_rotations.append(rotation.as_quat())
+                        candidate_rotations.append((candidate_count,rotation.as_quat()))
+                        candidate_count += 1
 
         return candidate_rotations
     
@@ -66,7 +65,8 @@ class PoseFinder:
         :return: List of quaternions (w, x, y, z).
         """
         from trimesh.transformations import quaternion_about_axis
-        candidates = [(1.0, 0.0, 0.0, 0.0)]  # Identity rotation
+        candidates = [(0, np.array([1.0, 0.0, 0.0, 0.0]))]  # Identity rotation
+        candidate_count = 1
 
         # Fibonacci sphere for axis sampling
         i = np.arange(0, axis_samples)
@@ -84,7 +84,8 @@ class PoseFinder:
                 angle = 2 * np.pi / order
                 for i in range(1, order):  # Skip 0 rotation (identity)
                     quat = quaternion_about_axis(i * angle, axis)
-                    candidates.append(tuple(quat))  # (w, x, y, z)
+                    candidates.append((candidate_count,quat))  # (w, x, y, z)
+                    candidate_count += 1
 
         return candidates
 
@@ -100,11 +101,11 @@ class PoseFinder:
         valid_rotations = []
 
         # Add the identity quaternion as the first valid rotation
-        valid_rotations.append((0, np.array([1.0, 0.0, 0.0, 0.0])))
+        # valid_rotations.append((0, np.array([1.0, 0.0, 0.0, 0.0])))
 
         count = 1  # Start counting from 1 as 0 is reserved for the identity quaternion
 
-        for quat in candidate_rotations:
+        for index, quat in candidate_rotations:
             rotation = R.from_quat(quat)
             rotated_vertices = rotation.apply(vertices)
 
@@ -152,7 +153,7 @@ class PoseFinder:
     def symmetry_handler(self, rotations):
         """
         Handles symmetry constraints by sorting by pose and assigning the same pose to symmetrically equivalent rotations.
-        This is done by checking if the rotation has multiple representations equivalent by rotational symmetry.
+        This is done by checking if the rotation has multiple rotatationally symmetrically equivalent representations.
         :param rotations: List of tuples (pose, valid rotation vector).
         :return: List of tuples (assigned pose, valid rotation vector).
         """
