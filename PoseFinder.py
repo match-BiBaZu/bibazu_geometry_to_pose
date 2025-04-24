@@ -1,7 +1,8 @@
 import trimesh
 import numpy as np
 from scipy.spatial.transform import Rotation as R
-from trimesh.transformations import quaternion_about_axis, rotation_matrix, reflection_matrix, quaternion_from_matrix
+from scipy.spatial import ConvexHull
+from trimesh.transformations import quaternion_about_axis, rotation_matrix, reflection_matrix, quaternion_from_matrix, identity_matrix
 
 class PoseFinder:
     def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-5):
@@ -31,7 +32,7 @@ class PoseFinder:
         if self.convex_hull_mesh.vertices is None or len(self.convex_hull_mesh.vertices) == 0:
             raise ValueError("Convex hull mesh vertices are not initialized or empty.")
         
-        if self.find_valid_rotations([(0, [1, 0, 0, 0])]) == []:
+        if self.find_valid_rotations([(0, [0, 0, 0, 1])]) == []:
             raise ValueError("The initial rotation is invalid according to the geometric assumptions. Please check the convex hull mesh and the original mesh.")
     
     def _compute_full_hull(self):
@@ -42,7 +43,6 @@ class PoseFinder:
             - face_centers: (N, 3) array of face center points
             - face_vertices: list of (M_i, 3) arrays of polygon boundary vertices
         """
-        import numpy as np
         mesh = self.convex_hull_mesh
         normals = []
         centers = []
@@ -60,8 +60,27 @@ class PoseFinder:
             normals.append(normed_normal)
             centers.append(center)
             polygons.append(boundary.vertices)
+        
+        if polygons:
+            polygons = np.vstack(polygons)
+        else:
+            polygons = np.empty((0, 3))
 
         return np.array(normals), np.array(centers), polygons
+    
+    def _compute_xy_shadow(self, vertices: np.ndarray) -> np.ndarray:
+        """
+        Compute the 2D convex hull shadow (z=0) from a set of 3D vertices.
+        :param vertices: (N, 3) array of vertex coordinates.
+        :return: (M, 3) array of 3D shadow vertices on the x-y plane (z=0).
+        """
+        projected_points = vertices[:, :2]
+        hull_2d = ConvexHull(projected_points)
+        hull_coords = projected_points[hull_2d.vertices]
+        z_min = np.min(vertices[:, 2])
+        shadow_vertices = np.hstack([hull_coords, np.full((len(hull_coords), 1), z_min)])  # z = z_min
+
+        return shadow_vertices
 
     def find_candidate_rotations_by_edge_alignment(self):
         """
@@ -116,55 +135,14 @@ class PoseFinder:
                     candidate_count += 1
 
         return candidate_rotations
-
-
-    def find_candidate_rotations_by_face_normal_alignment(self):
-            """
-            Computes candidate rotations by aligning every face normal with every other face normal.
-            :return: A list of candidate rotations as quaternions.
-            """
-            face_normals = self.convex_hull_mesh.face_normals
-            candidate_rotations = []
-            seen_rotations = set()
-            candidate_count = 0
-
-            for i, normal_1 in enumerate(face_normals):
-                for j, normal_2 in enumerate(face_normals):
-                    axis = np.cross(normal_1, normal_2)
-                    norm_axis = np.linalg.norm(axis)
-
-                    if norm_axis < 1e-6:
-                        # Parallel or anti-parallel normals
-                        dot = np.dot(normal_1, normal_2)
-                        if dot > 0.999:  # Aligned
-                            rotation = R.identity()
-                        else:  # Opposite direction
-                            # Any perpendicular axis is valid
-                            perp_axis = np.eye(3)[np.argmin(np.abs(normal_1))]  # choose a non-collinear axis
-                            axis = np.cross(normal_1, perp_axis)
-                            axis /= np.linalg.norm(axis)
-                            rotation = R.from_rotvec(axis * np.pi)
-                    else:
-                        axis /= norm_axis
-                        angle = np.arccos(np.clip(np.dot(normal_1, normal_2) /
-                                                (np.linalg.norm(normal_1) * np.linalg.norm(normal_2)), -1.0, 1.0))
-                        rotation = R.from_rotvec(axis * angle)
-
-                    quat = tuple(rotation.as_quat())  # round to avoid float issues
-                    if quat not in seen_rotations:
-                        seen_rotations.add(quat)
-                        candidate_rotations.append((candidate_count, np.array(quat)))
-                        candidate_count += 1
-
-            return candidate_rotations
     
     def find_candidate_rotations_by_face_normal_verticies(self):
         """
         Generate rotation quaternions around each unique convex hull face normal.
         Rotation angles are based on internal angles between edges (irregular polygons supported).
-        Returns a list of quaternions (w, x, y, z), including the identity.
+        Returns a list of quaternions (x, y, z, w), including the identity.
         """
-        quaternions = [(0, np.array([1.0, 0.0, 0.0, 0.0]))]  # Identity quaternion
+        quaternions = [(0, np.array([0.0, 0.0, 0.0, 0.1]))]  # Identity quaternion
         candidate_count = 1  # Initialize candidate count
 
         for normal, verts in self.full_hull:
@@ -201,7 +179,7 @@ class PoseFinder:
             for step in angle_steps:
                 cumulative_angle += step
                 quat = quaternion_about_axis(cumulative_angle % (2 * np.pi), normal)
-                quaternions.append((candidate_count,quat))  # (w, x, y, z)
+                quaternions.append((candidate_count,quat))  # (x, y, z, w)
                 candidate_count += 1
                 print(f"  ↪ Rotation {candidate_count}: {np.degrees(cumulative_angle):.2f}°")
 
@@ -213,11 +191,14 @@ class PoseFinder:
         Returns candidate rotations as quaternions.
         """
 
-        face_normals, face_centers, vertices = self._compute_full_hull()
-    
+        # Compute the full hull so that we can find the boundaries of the convex hull and the outward face normals
+        face_normals, _, vertices = self._compute_full_hull() 
         resting_face_idx = np.argmin(np.dot(face_normals, np.array([0, 0, -1])))
         resting_normal = face_normals[resting_face_idx]
-        candidate_rotations = [(0, np.array([1.0, 0.0, 0.0, 0.0]))]
+
+        # initialise the outputs of the first candidate which is the identity rotation
+        candidate_rotations = [(0, np.array([0.0, 0.0, 0.0, 1.0]))] ## Identity quaternion [x, y, z, w]
+        xy_shadows = [self._compute_xy_shadow(vertices)]
         candidate_count = 1
 
         for i, normal in enumerate(face_normals):
@@ -233,7 +214,7 @@ class PoseFinder:
 
            # Identity rotation
             if np.abs(angle) < 1e-6: 
-                quat = np.array([1.0, 0.0, 0.0, 0.0])  
+                quat = np.array([0.0, 0.0, 0.0, 0.1])  
             # 180° rotation: axis undefined → use any axis orthogonal to normal
             elif np.abs(angle - np.pi) < 1e-6:
                 ortho = np.array([1, 0, 0]) if abs(normal[0]) < 0.9 else np.array([0, 1, 0])
@@ -246,60 +227,15 @@ class PoseFinder:
                 quat = R.from_rotvec(axis * angle).as_quat()
 
             candidate_rotations.append((candidate_count, quat))
+            # Apply rotation and compute shadow
+            rotated_vertices = R.from_quat(quat).apply(vertices)
+            shadow = self._compute_xy_shadow(rotated_vertices)
+            xy_shadows.append(shadow)
+
             candidate_count += 1
 
-        return candidate_rotations
+        return candidate_rotations, xy_shadows
 
-
-    def find_candidate_rotations_by_resting_face_normal_verticies(self):
-        """
-        Generates in-plane rotations around the resting face normal (-Z).
-        Returns a list of quaternions (w, x, y, z), including the identity.
-        """
-        quaternions = [(0, np.array([1.0, 0.0, 0.0, 0.0]))]
-        candidate_count = 1
-
-        # Find resting face (normal closest to -Z)
-        for normal, verts in self.full_hull:
-            if np.allclose(normal, [0, 0, -1], atol=1e-3):
-                if len(verts) < 3:
-                    break
-
-                center = verts.mean(axis=0)
-                tmp = np.array([1, 0, 0]) if abs(normal[0]) < 0.9 else np.array([0, 1, 0])
-                x_axis = np.cross(tmp, normal)
-                x_axis /= np.linalg.norm(x_axis)
-                z_axis = np.cross(normal, x_axis)
-                projection = np.stack([x_axis, z_axis]).T
-                verts_2d = (verts - center) @ projection
-
-                angles = -np.arctan2(verts_2d[:, 1], verts_2d[:, 0])
-                angles = np.mod(angles, 2 * np.pi)
-                sort_order = np.argsort(angles)
-                verts_sorted = verts_2d[sort_order]
-                angles_sorted = angles[sort_order]
-                start_idx = np.argmin(angles_sorted)
-                verts_sorted = np.roll(verts_sorted, -start_idx, axis=0)
-
-                angle_steps = []
-                n = len(verts_sorted)
-                for i in range(n):
-                    a = verts_sorted[i - 1] - verts_sorted[i]
-                    b = verts_sorted[(i + 1) % n] - verts_sorted[i]
-                    a /= np.linalg.norm(a)
-                    b /= np.linalg.norm(b)
-                    dot = np.clip(np.dot(a, b), -1.0, 1.0)
-                    angle_steps.append(np.arccos(dot))
-
-                cumulative_angle = 0.0
-                for step in angle_steps:
-                    cumulative_angle += step
-                    quat = quaternion_about_axis(cumulative_angle % (2 * np.pi), [0, 0, -1])
-                    quaternions.append((candidate_count, quat))
-                    candidate_count += 1
-                break
-
-        return quaternions
 
     def find_candidate_rotations_by_fibonacci_sphere(self, axis_samples=20, angle_samples=12):
         """
@@ -307,10 +243,10 @@ class PoseFinder:
         First entry is the identity quaternion.
         :param axis_samples: Number of candidate axes (from Fibonacci sphere).
         :param angle_samples: Number of rotation orders to generate (2 to 2+angle_samples).
-        :return: List of quaternions (w, x, y, z).
+        :return: List of quaternions (x, y, z, w).
         """
         from trimesh.transformations import quaternion_about_axis
-        candidates = [(0, np.array([1.0, 0.0, 0.0, 0.0]))]  # Identity rotation
+        candidates = [(0, np.array([0.0, 0.0, 0.0, 0.1]))]  # Identity rotation
         candidate_count = 1
 
         # Fibonacci sphere for axis sampling
@@ -329,7 +265,7 @@ class PoseFinder:
                 angle = 2 * np.pi / order
                 for i in range(1, order):  # Skip 0 rotation (identity)
                     quat = quaternion_about_axis(i * angle, axis)
-                    candidates.append((candidate_count,quat))  # (w, x, y, z)
+                    candidates.append((candidate_count,quat))  # (x, y, z, w)
                     candidate_count += 1
 
         return candidates
