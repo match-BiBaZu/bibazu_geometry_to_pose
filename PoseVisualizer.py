@@ -65,13 +65,18 @@ class PoseVisualizer:
 
         for index, quats in poses_dict.items():
             fig = plt.figure(figsize=(10, 5))
-            ax = fig.add_subplot(111, projection='3d')
+            #ax = fig.add_subplot(111, projection='3d')
+
+            # Adjust the main axes to make space for text on the left
+            ax = fig.add_axes([0.3, 0.1, 0.65, 0.85], projection='3d')
+
             for i, quat in enumerate(quats):
-                self.plot_mesh(ax, self.original_mesh, f'Pose {index} - Rot {i+1}', quat=quat)
+                self.plot_mesh(ax, self.convex_hull_mesh, f'Pose {index} - Rot {i+1}', quat=quat)
 
             # Add all quaternions in one combined legend
             legend_text = "\n".join([f"Rot {i+1}: {np.round(q, 4)}" for i, q in enumerate(quats)])
-            ax.text2D(0.05, 0.95, legend_text, transform=ax.transAxes, fontsize='small', verticalalignment='top')
+            fig.text(0.02, 0.5, legend_text, va='center', ha='left', fontsize='small', family='monospace')
+            #ax.text2D(0.05, 0.95, legend_text, transform=ax.transAxes, fontsize='small', verticalalignment='top')
 
             plt.title(f'All rotations for Pose {index}')
             plt.tight_layout()
