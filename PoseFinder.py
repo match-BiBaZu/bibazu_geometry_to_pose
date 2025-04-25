@@ -155,42 +155,51 @@ class PoseFinder:
             xy_shadow = self._compute_xy_shadow(vertices)
         
         edge_dirs = []
-        xy_shadows = [xy_shadow]
-        candidate_rotations = [(0, np.array([0.0, 0.0, 0.0, 1.0]))] ## Identity quaternion [x, y, z, w]
+        xy_shadows = []
+        candidate_rotations = [] ## Identity quaternion [x, y, z, w]
 
-        # Compute 2D normalized edge directions
         for i in range(len(xy_shadow)):
-            if i == len(xy_shadow) - 1:
-                continue
             p1 = xy_shadow[i][:2]
-            p2 = xy_shadow[i + 1][:2]
+            p2 = xy_shadow[(i + 1) % len(xy_shadow)][:2]
             edge = p2 - p1
             norm = np.linalg.norm(edge)
             if norm > 1e-8:
                 edge_dirs.append(edge / norm)
+            else:
+                edge_dirs.append(np.array([0.0, 0.0]))
 
-        # Find edge closest to +y-axis
+        edge_dirs = np.array(edge_dirs)
+
+        # Step 2: Find index of edge closest to +y
         y_axis = np.array([0, 1])
-        angles = [np.arccos(np.clip(np.dot(e, y_axis), -1.0, 1.0)) for e in edge_dirs]
+        angles_to_y = [np.arccos(np.clip(np.dot(e, y_axis), -1.0, 1.0)) for e in edge_dirs]
         signs = [np.sign(np.cross(y_axis, e)) for e in edge_dirs]
-        signed_angles = [a * s for a, s in zip(angles, signs)]
+        signed_angles = [a * s for a, s in zip(angles_to_y, signs)]
+        start_idx = np.argmin(np.abs(signed_angles))
 
-        min_idx = np.argmin(np.abs(signed_angles))
-        offset_angle = signed_angles[min_idx]
+        # Step 3: Compute internal angles between consecutive edges
+        internal_angles = []
+        for i in range(len(xy_shadow)):
+            prev = edge_dirs[i - 1]  # reverse previous edge (points into vertex)
+            curr = edge_dirs[i]       # current edge (points out from vertex)
 
-        # Generate quaternion for each edge with offset correction
-        
-        for i, edge_dir in enumerate(edge_dirs):
-            edge_angle = np.arctan2(edge_dir[0], edge_dir[1])
-            corrected_angle = edge_angle - offset_angle
-            quat = R.from_euler('z', -corrected_angle).as_quat()  # [x, y, z, w]
+            angle = np.arctan2(np.cross(prev, curr), np.dot(prev, curr))  # angle at vertex
+            internal_angles.append(angle)
+
+        # Step 4: Generate cumulative rotations from the aligned start edge
+        cumulative_angle = -signed_angles[start_idx]  # initial offset to align start edge with +y
+
+        for i in range(len(xy_shadow)):
+            edge_idx = (start_idx + i) % len(xy_shadow)
+            quat = R.from_euler('z', -cumulative_angle).as_quat()
+            cumulative_angle += internal_angles[(edge_idx + 1) % len(xy_shadow)]
 
             # rotate the shadow by quat
             rotated_shadow = R.from_quat(quat).apply(xy_shadow)
             # Append the shadow to the list of shadows
             xy_shadows.append(rotated_shadow)
             # Append the rotation to the list of candidate rotations
-            candidate_rotations.append((i+1, quat))
+            candidate_rotations.append((i, quat))
 
         return candidate_rotations , xy_shadows
 
