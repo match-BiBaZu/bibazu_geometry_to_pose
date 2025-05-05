@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 
 class PoseVisualizer:
-    def __init__(self, original_obj_file: str, convex_hull_obj_file: str, valid_rotations, xy_shadows: list = None):
+    def __init__(self, original_obj_file: str, convex_hull_obj_file: str, valid_rotations, xy_shadows: list = None, candidate_ids: list = None):
         """
         Initialize the PoseVisualizer with original and convex hull OBJ files and valid rotations.
         :param original_obj_file: Path to the original OBJ file.
@@ -14,6 +14,7 @@ class PoseVisualizer:
         self.original_mesh = trimesh.load_mesh(original_obj_file)
         self.convex_hull_mesh = trimesh.load_mesh(convex_hull_obj_file)
         self.xy_shadows = xy_shadows
+        self.candidate_ids = candidate_ids
 
         # Ensure the meshes are centered around the centroid of the convex hull
         centroid = self.convex_hull_mesh.centroid
@@ -71,33 +72,50 @@ class PoseVisualizer:
 
     def visualize_rotations(self):
         """
-        Generates one plot per unique pose index, with all associated rotations visualized in the same figure.
+        Visualizes all rotations grouped by candidate_id (from self.candidate_ids).
+        If a candidate_id appears more than once (i.e., symmetry), highlight in red.
         """
 
         if self.xy_shadows and len(self.xy_shadows) == len(self.valid_rotations):
-            zipped = list(zip(self.valid_rotations, self.xy_shadows))
+            zipped = list(zip(self.valid_rotations, self.xy_shadows, self.candidate_ids))
         else:
-            zipped = [(entry, None) for entry in self.valid_rotations]
+            zipped = [(entry, None, cid) for entry, cid in zip(self.valid_rotations, self.candidate_ids)]
 
-        # Group by pose index
-        poses_dict = {}
-        for (pose_idx, quat), shadow in zipped:
-            if pose_idx not in poses_dict:
-                poses_dict[pose_idx] = []
-            poses_dict[pose_idx].append((quat, shadow))
+        # Detect symmetric candidate_ids manually
+        seen = set()
+        symmetric_ids = set()
+        for (rot_idx, quat) in self.valid_rotations:
+            if rot_idx in seen:
+                symmetric_ids.add(rot_idx)
+            else:
+                seen.add(rot_idx)
 
-        for pose_idx, entries in poses_dict.items():
+        # Group entries by candidate_id
+        grouped = {}
+        for (rot_idx, quat), shadow, (face_id, shadow_id) in zipped:
+            if face_id not in grouped:
+                grouped[face_id] = []
+            grouped[face_id].append((rot_idx, quat, shadow))
+
+        for face_id, entries in grouped.items():
+            is_symmetric = face_id in symmetric_ids
+
             fig = plt.figure(figsize=(10, 5))
             ax = fig.add_axes([0.3, 0.1, 0.65, 0.85], projection='3d')
 
-            for i, (quat, shadow) in enumerate(entries):
-                self.plot_mesh(ax, self.original_mesh, f'Pose {pose_idx} - Rot {i+1}', quat=quat)
+            legend_text = []
+            for i, (rot_idx, quat, shadow) in enumerate(entries):
+                self.plot_mesh(ax, self.original_mesh, None, quat=quat)
                 if shadow is not None:
-                    self.plot_shadow(ax, shadow, title=f'Shadow {pose_idx} - Rot {i+1}')
+                    self.plot_shadow(ax, shadow, None)
+                legend_text.append(f"Rot {rot_idx+1}: {np.round(quat, 4)}")
 
-            legend_text = "\n".join([f"Rot {i+1}: {np.round(q, 4)}" for i, (q, _) in enumerate(entries)])
-            fig.text(0.02, 0.5, legend_text, va='center', ha='left', fontsize='small', family='monospace')
-
-            plt.title(f'All rotations for Pose {pose_idx}')
+            label_color = 'red' if is_symmetric else 'black'
+            fig.text(0.02, 0.5, "\n".join(legend_text), va='center', ha='left',
+                    fontsize='small', family='monospace', color=label_color)
+            fig.suptitle(f'All valid rotations on natural resting face {face_id}', color=label_color)
             plt.tight_layout()
             plt.show()
+
+
+

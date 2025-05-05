@@ -10,6 +10,9 @@ class PoseFinder:
         Initialize the PoseFinder with the convex hull OBJ file.
         :param convex_hull_obj_file: Path to the convex hull OBJ file.
         """
+        # Initialize a numerical tolerance for grouping
+        self.tolerance = tolerance
+
         self.mesh = trimesh.load_mesh(self_obj_file)
         self.convex_hull_mesh = trimesh.load_mesh(convex_hull_obj_file)
 
@@ -21,9 +24,6 @@ class PoseFinder:
 
         # Compute full polygonal face hulls
         self.full_hull = self._compute_full_hull()
-
-        #Initailze a numerical tolerance for grouping
-        self.tolerance = tolerance
 
         # Check to ensure that the mesh and convex hull meshes are not empty
         if self.mesh.vertices is None or len(self.mesh.vertices) == 0:
@@ -63,6 +63,7 @@ class PoseFinder:
                 continue
 
             normed_normal = normal / np.linalg.norm(normal)
+            normed_normal = np.where(np.abs(normed_normal) < self.tolerance, 0.0, normed_normal)  # Ensure all zeros are positive
             center = boundary.vertices.mean(axis=0)
 
             normals.append(normed_normal)
@@ -114,8 +115,10 @@ class PoseFinder:
             angle = np.arccos(dot)
 
             #if resting face is at the top, we need to extend the angle by 180 degrees to make sure its facing downwards
-            if dot > 0:
-                angle = (angle + np.pi) % (2 * np.pi)
+            #if dot > 0:
+            if normal[2] > 0:
+                angle = np.pi - angle
+                #angle = (angle + np.pi) % (2 * np.pi)
 
            # Identity rotation
             if np.abs(angle) < 1e-6: 
@@ -203,7 +206,41 @@ class PoseFinder:
 
         return candidate_rotations , xy_shadows
 
-    
+    def find_candidate_rotations_by_face_and_shadow_alignment(self) -> tuple[list[tuple[int, np.ndarray]], list[np.ndarray], list[tuple[int, int]]]:
+        """
+        Generates combined re-orientations by first aligning each face normal to the resting face (facing -Z),
+        and then rotating around Z to align a shadow edge with +Y.
+
+        Returns:
+            candidate_rotations: List of (index, quaternion [x, y, z, w])
+            xy_shadows: List of (N, 3) arrays of rotated 2D shadow vertices in XY plane (z=0)
+        """
+        face_rotations, base_xy_shadows = self.find_candidate_rotations_by_resting_face_normal_alignment()
+        combined_rotations = []
+        combined_shadows = []
+        combined_ids = []
+        candidate_count = 0
+
+        for i, (face_id, face_quat) in enumerate(face_rotations):
+            # Compute rotated shadow under face alignment
+            shadow = base_xy_shadows[i]
+
+            # Compute shadow-alignment rotations from this configuration
+            shadow_rotations, shadow_variants = self.find_candidate_rotations_by_shadow_edge_alignment(shadow)
+
+            for j, (shadow_id, shadow_quat) in enumerate(shadow_rotations):
+                # Compose total rotation: shadow_quat * face_quat
+                q_total = R.from_quat(shadow_quat) * R.from_quat(face_quat)
+                q_total = q_total.as_quat()  # Final rotation quaternion
+
+                combined_rotations.append((candidate_count, q_total))
+                combined_shadows.append(shadow_variants[j])
+                combined_ids.append((face_id, shadow_id))
+
+                candidate_count += 1
+
+        return combined_rotations, combined_shadows, combined_ids
+
     def duplicate_remover(self, rotations: list[tuple[int, np.ndarray]]) -> list[tuple[int, np.ndarray]]:
         """
         Handles duplicate rotations by removing rotations that are too close to each other.
@@ -227,37 +264,36 @@ class PoseFinder:
     def symmetry_handler(self, rotations: list[tuple[int, np.ndarray]]) -> list[tuple[int, np.ndarray]]:
         """
         Handles symmetry constraints by sorting by pose and assigning the same pose to symmetrically equivalent rotations.
-        This is done by checking if the full mesh has multiple rotatationally symmetrically equivalent representations.
+        This is done by checking if the full mesh has multiple rotationally symmetrically equivalent representations.
         :param rotations: List of tuples (pose, valid rotation vector).
         :return: List of tuples (assigned pose, valid rotation vector).
         """
-        assigned_rotations = []
+        assigned_rotations = [-1] * len(rotations)  # Initialize with -1 to indicate unassigned
         assymetric_pose_count = 0
 
-        for index, quat in rotations:
-            # Check if the rotation is already assigned to a pose
-            if not any(np.array_equal(quat, assigned_quat) for _, assigned_quat in assigned_rotations):
-                assigned_rotations.append((assymetric_pose_count, quat))
+        for index, (pose, quat) in enumerate(rotations):
+            if assigned_rotations[index] == -1:  # If not yet assigned
+                assigned_rotations[index] = assymetric_pose_count
 
-                # Check if the rotation has multiple representations equivalent by rotational symmetry
+                # Check for symmetrically equivalent rotations
                 rotation = R.from_quat(quat)
                 rotated_vertices = rotation.apply(self.mesh.vertices)
 
-                for check_index, check_quat in rotations:
-                    if check_index != index:
+                for check_index, (_, check_quat) in enumerate(rotations):
+                    if assigned_rotations[check_index] == -1:  # Only check unassigned rotations
                         check_rotation = R.from_quat(check_quat)
                         check_rotated_vertices = check_rotation.apply(self.mesh.vertices)
 
                         sorted_rotated_vertices = np.sort(rotated_vertices, axis=0)
                         sorted_check_rotated_vertices = np.sort(check_rotated_vertices, axis=0)
 
-                        # Do is close as the vertices have a slight numerical noise when the rotation is applied
+                        # Check if the vertices are close enough to consider them equivalent
                         is_close = np.allclose(sorted_rotated_vertices, sorted_check_rotated_vertices, atol=self.tolerance, rtol=0.0)
 
                         if is_close:
-                            # Append the rotation with the same pose count if it is rotationally symmetric
-                            assigned_rotations.append((assymetric_pose_count, check_quat))
-                
+                            assigned_rotations[check_index] = assymetric_pose_count
+
                 assymetric_pose_count += 1
 
-        return assigned_rotations
+        # Return the assigned rotations in the same order as the input
+        return [(assigned_rotations[i], quat) for i, (_, quat) in enumerate(rotations)]
