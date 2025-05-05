@@ -12,7 +12,7 @@ script_dir = Path(__file__).parent
 workpiece_path =  script_dir / 'Workpieces'
 
 # Get the workpiece name you want to find poses for
-workpiece_name = 'Teil_1'
+workpiece_name = 'Teil_3'
 
 # Convert the STL file to an OBJ file
 stl_to_obj_converter(str(workpiece_path / (workpiece_name + '.STL')), str(workpiece_path / (workpiece_name + '.obj')),1)
