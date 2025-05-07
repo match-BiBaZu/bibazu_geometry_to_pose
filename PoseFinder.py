@@ -5,7 +5,7 @@ from scipy.spatial import ConvexHull
 from trimesh.transformations import quaternion_about_axis, rotation_matrix, reflection_matrix, quaternion_from_matrix, identity_matrix
 
 class PoseFinder:
-    def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-5):
+    def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-10):
         """
         Initialize the PoseFinder with the convex hull OBJ file.
         :param convex_hull_obj_file: Path to the convex hull OBJ file.
@@ -91,7 +91,7 @@ class PoseFinder:
 
         return shadow_vertices
 
-    def find_candidate_rotations_by_resting_face_normal_alignment(self) -> tuple[list[tuple[int, np.ndarray]], list[np.ndarray]]:
+    def find_candidate_rotations_by_resting_face_normal_alignment(self) -> tuple[list[tuple[int, int, int, np.ndarray]], list[np.ndarray]]:
         """
         Aligns each face normal to the resting face normal (closest to -Z).
         Returns candidate rotations as quaternions.
@@ -103,7 +103,7 @@ class PoseFinder:
         resting_normal = face_normals[resting_face_idx]
 
         # initialise the outputs of the first candidate which is the identity rotation
-        candidate_rotations = [(0, np.array([0.0, 0.0, 0.0, 1.0]))] ## Identity quaternion [x, y, z, w]
+        candidate_rotations = [(0, 0, 0, np.array([0.0, 0.0, 0.0, 1.0]))] ## Identity quaternion [x, y, z, w]
         xy_shadows = [self._compute_xy_shadow(vertices)]
         candidate_count = 1
 
@@ -134,7 +134,7 @@ class PoseFinder:
                 axis /= np.linalg.norm(axis)
                 quat = R.from_rotvec(axis * angle).as_quat()
 
-            candidate_rotations.append((candidate_count, quat))
+            candidate_rotations.append((candidate_count,candidate_count, 0, quat))
             # Apply rotation and compute shadow
             rotated_vertices = R.from_quat(quat).apply(vertices)
             shadow = self._compute_xy_shadow(rotated_vertices)
@@ -144,7 +144,7 @@ class PoseFinder:
 
         return candidate_rotations, xy_shadows
     
-    def find_candidate_rotations_by_shadow_edge_alignment(self,xy_shadow: np.ndarray = None) -> tuple[list[tuple[int, np.ndarray]], list[np.ndarray]]:
+    def find_candidate_rotations_by_shadow_edge_alignment(self,xy_shadow: np.ndarray = None) -> tuple[list[tuple[int, int, int, np.ndarray]], list[np.ndarray]]:
         """
         Generates quaternions rotating around the z-axis that align each shadow edge with the y-axis.
         The first rotation aligns the edge closest to the y-axis, and the same angular correction is applied to all.
@@ -202,11 +202,11 @@ class PoseFinder:
             # Append the shadow to the list of shadows
             xy_shadows.append(rotated_shadow)
             # Append the rotation to the list of candidate rotations
-            candidate_rotations.append((i, quat))
+            candidate_rotations.append((i, 0, i, quat))
 
-        return candidate_rotations , xy_shadows
+        return candidate_rotations, xy_shadows
 
-    def find_candidate_rotations_by_face_and_shadow_alignment(self) -> tuple[list[tuple[int, np.ndarray]], list[np.ndarray], list[tuple[int, int]]]:
+    def find_candidate_rotations_by_face_and_shadow_alignment(self) -> tuple[list[tuple[int, int, int, np.ndarray]], list[np.ndarray]]:
         """
         Generates combined re-orientations by first aligning each face normal to the resting face (facing -Z),
         and then rotating around Z to align a shadow edge with +Y.
@@ -218,30 +218,28 @@ class PoseFinder:
         face_rotations, base_xy_shadows = self.find_candidate_rotations_by_resting_face_normal_alignment()
         combined_rotations = []
         combined_shadows = []
-        combined_ids = []
         candidate_count = 0
 
-        for i, (face_id, face_quat) in enumerate(face_rotations):
+        for i, (face_id, _, _, face_quat) in enumerate(face_rotations):
             # Compute rotated shadow under face alignment
             shadow = base_xy_shadows[i]
 
             # Compute shadow-alignment rotations from this configuration
             shadow_rotations, shadow_variants = self.find_candidate_rotations_by_shadow_edge_alignment(shadow)
 
-            for j, (shadow_id, shadow_quat) in enumerate(shadow_rotations):
+            for j, (edge_id, _, _, shadow_quat) in enumerate(shadow_rotations):
                 # Compose total rotation: shadow_quat * face_quat
                 q_total = R.from_quat(shadow_quat) * R.from_quat(face_quat)
                 q_total = q_total.as_quat()  # Final rotation quaternion
 
-                combined_rotations.append((candidate_count, q_total))
+                combined_rotations.append((candidate_count, face_id, edge_id, q_total))
                 combined_shadows.append(shadow_variants[j])
-                combined_ids.append((face_id, shadow_id))
 
                 candidate_count += 1
 
-        return combined_rotations, combined_shadows, combined_ids
+        return combined_rotations, combined_shadows
 
-    def duplicate_remover(self, rotations: list[tuple[int, np.ndarray]]) -> list[tuple[int, np.ndarray]]:
+    def duplicate_remover(self, rotations: list[tuple[int, int, int, np.ndarray]]) -> list[tuple[int, int, int, np.ndarray]]:
         """
         Handles duplicate rotations by removing rotations that are too close to each other.
         :param rotations: List of tuples (pose, valid rotation vector).
@@ -251,17 +249,17 @@ class PoseFinder:
         assigned_rotations = []
         pose_count = 0
 
-        for index, quat in rotations:
+        for index, face_id, edge_id, quat in rotations:
             rounded_quat = tuple(np.round(quat, decimals=int(np.log10(1/self.tolerance))))  # Round to prevent numerical noise
             one_zero_rounded_quat = tuple(0.0 if abs(x) < self.tolerance else x for x in rounded_quat)  # Ensure all zeros are positive
             if one_zero_rounded_quat not in unique_rotations:
                 unique_rotations[one_zero_rounded_quat] = index
-                assigned_rotations.append((pose_count, one_zero_rounded_quat))
+                assigned_rotations.append((pose_count, face_id, edge_id, one_zero_rounded_quat))
                 pose_count += 1
         
         return assigned_rotations
     
-    def symmetry_handler(self, rotations: list[tuple[int, np.ndarray]]) -> list[tuple[int, np.ndarray]]:
+    def symmetry_handler(self, rotations: list[tuple[int, int, int, np.ndarray]]) -> list[tuple[int, int, int, np.ndarray]]:
         """
         Handles symmetry constraints by sorting by pose and assigning the same pose to symmetrically equivalent rotations.
         This is done by checking if the full mesh has multiple rotationally symmetrically equivalent representations.
@@ -271,7 +269,7 @@ class PoseFinder:
         assigned_rotations = [-1] * len(rotations)  # Initialize with -1 to indicate unassigned
         assymetric_pose_count = 0
 
-        for index, (pose, quat) in enumerate(rotations):
+        for index, (pose, face_id, edge_id, quat) in enumerate(rotations):
             if assigned_rotations[index] == -1:  # If not yet assigned
                 assigned_rotations[index] = assymetric_pose_count
 
@@ -279,7 +277,7 @@ class PoseFinder:
                 rotation = R.from_quat(quat)
                 rotated_vertices = rotation.apply(self.mesh.vertices)
 
-                for check_index, (_, check_quat) in enumerate(rotations):
+                for check_index, (_, face_id, edge_id, check_quat) in enumerate(rotations):
                     if assigned_rotations[check_index] == -1:  # Only check unassigned rotations
                         check_rotation = R.from_quat(check_quat)
                         check_rotated_vertices = check_rotation.apply(self.mesh.vertices)
@@ -296,4 +294,4 @@ class PoseFinder:
                 assymetric_pose_count += 1
 
         # Return the assigned rotations in the same order as the input
-        return [(assigned_rotations[i], quat) for i, (_, quat) in enumerate(rotations)]
+        return [(assigned_rotations[i], rotations[i][1], rotations[i][2], quat) for i, (_, _, _, quat) in enumerate(rotations)]

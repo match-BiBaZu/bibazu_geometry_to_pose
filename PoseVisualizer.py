@@ -4,17 +4,19 @@ import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 
 class PoseVisualizer:
-    def __init__(self, original_obj_file: str, convex_hull_obj_file: str, valid_rotations, xy_shadows: list = None, candidate_ids: list = None):
+    def __init__(self, original_obj_file: str = None, convex_hull_obj_file: str = None, valid_rotations: list = None, xy_shadows: list = None):
         """
         Initialize the PoseVisualizer with original and convex hull OBJ files and valid rotations.
         :param original_obj_file: Path to the original OBJ file.
         :param convex_hull_obj_file: Path to the convex hull OBJ file.
         :param valid_rotations: List of tuples (index, quaternion) representing valid rotations.
         """
+        if any(arg is None for arg in [original_obj_file, convex_hull_obj_file, xy_shadows]):
+            raise ValueError("All inputs (original_obj_file, convex_hull_obj_file, xy_shadows) must be provided and not None.")
+        
         self.original_mesh = trimesh.load_mesh(original_obj_file)
         self.convex_hull_mesh = trimesh.load_mesh(convex_hull_obj_file)
         self.xy_shadows = xy_shadows
-        self.candidate_ids = candidate_ids
 
         # Ensure the meshes are centered around the centroid of the convex hull
         centroid = self.convex_hull_mesh.centroid
@@ -76,13 +78,10 @@ class PoseVisualizer:
         Rotations with the same face_id or same rot_idx are shown in the same figure.
         """
 
-        if self.xy_shadows and len(self.xy_shadows) == len(self.valid_rotations):
-            zipped = list(zip(self.valid_rotations, self.xy_shadows, self.candidate_ids))
-        else:
-            zipped = [(entry, None, cid) for entry, cid in zip(self.valid_rotations, self.candidate_ids)]
+        zipped = list(zip(self.valid_rotations, self.xy_shadows))
 
         # Build full entry list: each entry = (rot_idx, quat, shadow, face_id)
-        entries = [(rot_idx, quat, shadow, face_id) for (rot_idx, quat), shadow, (face_id, _) in zipped]
+        entries = [(rot_idx, quat, shadow, face_id) for (rot_idx, face_id, edge_id, quat), shadow, in zipped]
 
         # Group entries by combined (rot_idx OR face_id)
         grouped = []
@@ -120,14 +119,14 @@ class PoseVisualizer:
             # Build grouped legend text by rot_idx
             legend_lines = []
             for rot_idx, entries in rot_groups.items():
-                legend_lines.append(f"RotIdx {rot_idx}:")
+                legend_lines.append(f"Pose Number {rot_idx}:")
                 for quat, _, face_id in entries:
-                    legend_lines.append(f"  ↪ Face ID {face_id}: {np.round(quat, 4)}")
+                    legend_lines.append(f"↪ On Resting Face {face_id} Rotated by {np.round(quat, 4)}")
 
             fig.text(0.02, 0.5, "\n".join(legend_lines), va='center', ha='left',
                     fontsize='small', family='monospace', color='black')
 
-            fig.suptitle('Grouped by Symmetry Class and Face ID', color='black')
+            fig.suptitle('Grouped by Resting Face and Symmetry', color='black')
             plt.tight_layout()
             plt.show()
 
