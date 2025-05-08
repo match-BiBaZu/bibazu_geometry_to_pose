@@ -2,6 +2,7 @@ import trimesh
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
+from matplotlib.patches import Patch
 
 class PoseVisualizer:
     def __init__(self, original_obj_file: str = None, convex_hull_obj_file: str = None, valid_rotations: list = None, xy_shadows: list = None):
@@ -72,21 +73,80 @@ class PoseVisualizer:
                         triangles=faces, color='gray', alpha=0.5, edgecolor='k')
         ax.set_title(title)
 
+    def add_reference_planes(self, ax, mesh, plane_alpha=0.1):
+        """
+        Adds two reference planes:
+        - XY plane aligned with the bottom (min Z) and left-most (min X) vertex of the mesh
+        - YZ plane aligned with the left-most vertex and touching the XY plane
+        Plane size is based on the largest edge of the convex hull mesh.
+        """
+
+        # Get largest convex hull edge
+        hull_edges = self.convex_hull_mesh.edges_unique
+        hull_vertices = self.convex_hull_mesh.vertices
+        edge_lengths = np.linalg.norm(hull_vertices[hull_edges[:, 0]] - hull_vertices[hull_edges[:, 1]], axis=1)
+        max_edge = np.max(edge_lengths)
+        half = max_edge / 2
+
+        # Get key intersection anchors
+        min_z_vertex = mesh.vertices[np.argmin(mesh.vertices[:, 2])]
+        min_x_vertex = mesh.vertices[np.argmin(mesh.vertices[:, 0])]
+        z_intercept = min_z_vertex[2]
+        x_intercept = min_x_vertex[0]
+
+        # --- XY Plane: aligned with min_z and shifted so left edge touches min_x ---
+        xy_vertices = np.array([
+            [x_intercept,        -half, z_intercept],
+            [x_intercept + max_edge, -half, z_intercept],
+            [x_intercept + max_edge,  half, z_intercept],
+            [x_intercept,         half, z_intercept],
+        ])
+        xy_faces = np.array([
+            [0, 1, 2],
+            [0, 2, 3]
+        ])
+        ax.plot_trisurf(xy_vertices[:, 0], xy_vertices[:, 1], xy_vertices[:, 2],
+                        triangles=xy_faces, color='blue', alpha=plane_alpha, edgecolor='k')
+
+        # --- YZ Plane: aligned with min_x and bottom edge at z = min_z ---
+        yz_vertices = np.array([
+            [x_intercept, -half, z_intercept],
+            [x_intercept, -half, z_intercept + max_edge],
+            [x_intercept,  half, z_intercept + max_edge],
+            [x_intercept,  half, z_intercept],
+        ])
+        yz_faces = np.array([
+            [0, 1, 2],
+            [0, 2, 3]
+        ])
+        ax.plot_trisurf(yz_vertices[:, 0], yz_vertices[:, 1], yz_vertices[:, 2],
+                        triangles=yz_faces, color='green', alpha=plane_alpha, edgecolor='k')
+
+    def add_plot_legend(self, ax):
+        """
+        Adds a custom legend to the 3D plot showing labels for all components.
+        """
+        legend_elements = [
+            Patch(facecolor='blue', edgecolor='k', label='Slide Edge XY'),
+            Patch(facecolor='green', edgecolor='k', label='Slide Edge YZ'),
+            Patch(facecolor='gray', edgecolor='k', label='Convex Hull Shadow'),
+            Patch(facecolor='orange', edgecolor='k', label='Workpiece')  # assuming mesh color is orange
+        ]
+        ax.legend(handles=legend_elements, loc='upper left', fontsize='x-small')
+
+
     def visualize_rotations(self):
         """
         Visualizes all rotations grouped by rot_idx and face_id.
-        Rotations with the same face_id or same rot_idx are shown in the same figure.
+        Each rotation is shown in its own subplot with a detailed title.
         """
 
         zipped = list(zip(self.valid_rotations, self.xy_shadows))
+        entries = [(rot_idx, quat, shadow, face_id) for (rot_idx, face_id, edge_id, quat), shadow in zipped]
 
-        # Build full entry list: each entry = (rot_idx, quat, shadow, face_id)
-        entries = [(rot_idx, quat, shadow, face_id) for (rot_idx, face_id, edge_id, quat), shadow, in zipped]
-
-        # Group entries by combined (rot_idx OR face_id)
+        # Group by rot_idx or face_id
         grouped = []
         used = set()
-
         for i, (rot_idx_i, _, _, face_id_i) in enumerate(entries):
             if i in used:
                 continue
@@ -100,33 +160,31 @@ class PoseVisualizer:
             grouped.append(group)
 
         for group in grouped:
-            fig = plt.figure(figsize=(10, 5))
-            ax = fig.add_axes([0.3, 0.1, 0.65, 0.85], projection='3d')
+            n = len(group)
+            cols = min(n, 4)
+            rows = int(np.ceil(n / cols))
 
-            # Group legend entries by rot_idx
-            rot_groups = {}
-            for rot_idx, quat, shadow, face_id in group:
-                if rot_idx not in rot_groups:
-                    rot_groups[rot_idx] = []
-                rot_groups[rot_idx].append((quat, shadow, face_id))
+            fig = plt.figure(figsize=(4 * cols, 4 * rows))
 
-            for rot_idx, entries in rot_groups.items():
-                for quat, shadow, _ in entries:
-                    self.plot_mesh(ax, self.original_mesh, None, quat=quat)
-                    if shadow is not None:
-                        self.plot_shadow(ax, shadow, None)
+            for idx, (rot_idx, quat, shadow, face_id) in enumerate(group):
+                ax = fig.add_subplot(rows, cols, idx + 1, projection='3d')
+                self.plot_mesh(ax, self.original_mesh, None, quat=quat)
+                self.add_reference_planes(ax, self.original_mesh)
+                if shadow is not None:
+                    self.plot_shadow(ax, shadow, title=None)
+                
+                # Add legend
+                self.add_plot_legend(ax)
 
-            # Build grouped legend text by rot_idx
-            legend_lines = []
-            for rot_idx, entries in rot_groups.items():
-                legend_lines.append(f"Pose Number {rot_idx}:")
-                for quat, _, face_id in entries:
-                    legend_lines.append(f"↪ On Resting Face {face_id} Rotated by {np.round(quat, 4)}")
+                # Detailed legend as subplot title
+                title_lines = [
+                    f"Pose Number {rot_idx}",
+                    f"↪ On Resting Face {face_id}",
+                    f"↪ Quaternion {np.round(quat, 4)}"
+                ]
+                ax.set_title("\n".join(title_lines), fontsize=8)
 
-            fig.text(0.02, 0.5, "\n".join(legend_lines), va='center', ha='left',
-                    fontsize='small', family='monospace', color='black')
-
-            fig.suptitle('Grouped by Resting Face and Symmetry', color='black')
+            fig.suptitle('Grouped by Resting Face and Symmetry', fontsize=14)
             plt.tight_layout()
             plt.show()
 

@@ -39,7 +39,7 @@ candidate_rotations, xy_shadows = pose_finder.find_candidate_rotations_by_face_a
 unique_rotations = pose_finder.duplicate_remover(candidate_rotations)
 
 # Find unique poses by considering symmetry
-symmetrically_unique_rotations = pose_finder.symmetry_handler(unique_rotations)
+symmetrically_unique_rotations = pose_finder.symmetry_handler(candidate_rotations)
 
 # Initialize the PoseVisualizer with the original and convex hull OBJ files and valid rotations
 pose_visualizer = pv.PoseVisualizer(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '_convex_hull.obj')), symmetrically_unique_rotations,xy_shadows)

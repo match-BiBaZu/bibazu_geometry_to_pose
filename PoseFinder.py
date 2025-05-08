@@ -190,7 +190,8 @@ class PoseFinder:
             internal_angles.append(angle)
 
         # Step 4: Generate cumulative rotations from the aligned start edge
-        cumulative_angle = -signed_angles[start_idx]  # initial offset to align start edge with +y
+        #cumulative_angle = -signed_angles[start_idx]  # initial offset to align start edge with +y
+        cumulative_angle = 0
 
         for i in range(len(xy_shadow)):
             edge_idx = (start_idx + i) % len(xy_shadow)
