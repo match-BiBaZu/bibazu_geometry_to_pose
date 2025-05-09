@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 from matplotlib.patches import Patch
 import tkinter as tk
+import os
 
 class PoseVisualizer:
     def __init__(self, original_obj_file: str = None, convex_hull_obj_file: str = None, valid_rotations: list = None, xy_shadows: list = None):
@@ -28,7 +29,7 @@ class PoseVisualizer:
         # Store valid rotations
         self.valid_rotations = valid_rotations
 
-    def rotate_mesh(self, mesh, quat = None):
+    def _rotate_mesh(self, mesh, quat = None):
         """
         Rotates the vertices of the mesh using the given quaternion.
         :param mesh: Trimesh mesh whose vertices are to be rotated.
@@ -43,7 +44,7 @@ class PoseVisualizer:
             vertices = rotation.apply(vertices)
         return vertices, faces
 
-    def plot_mesh(self, ax, vertices, faces, title):
+    def _plot_mesh(self, ax, vertices, faces, title):
         """
         Plots a 3D mesh with an optional rotation.
         :param ax: Matplotlib 3D axis.
@@ -67,7 +68,7 @@ class PoseVisualizer:
         ax.set_ylim(mid_y - max_range, mid_y + max_range)
         ax.set_zlim(mid_z - max_range, mid_z + max_range)
     
-    def plot_shadow(self, ax, shadow_vertices: np.ndarray, title: str):
+    def _plot_shadow(self, ax, shadow_vertices: np.ndarray, title: str):
         """
         Plot a 2D shadow (z=0) from its ordered vertices using a fan triangulation.
         :param ax: Matplotlib 3D axis.
@@ -82,7 +83,7 @@ class PoseVisualizer:
                         triangles=faces, color='gray', alpha=0.5, edgecolor='k')
         ax.set_title(title)
 
-    def add_reference_planes(self, ax, vertices, plane_alpha=0.1):
+    def _add_reference_planes(self, ax, vertices, plane_alpha=0.1):
         """
         Adds two intersecting planes:
         - XY plane (blue): at lowest Z, clipped to axis X/Y limits
@@ -134,7 +135,7 @@ class PoseVisualizer:
                         triangles=yz_faces, color='green', alpha=plane_alpha, edgecolor='k')
 
 
-    def add_plot_legend(self, ax):
+    def _add_plot_legend(self, ax):
         """
         Adds a custom legend to the 3D plot showing labels for all components.
         """
@@ -146,8 +147,26 @@ class PoseVisualizer:
         ]
         ax.legend(handles=legend_elements, loc='upper left', fontsize='x-small')
 
+    def _save_pose_figure(self, fig, workpiece_name: str, face_id: int):
+        """
+        Saves the figure to the 'Poses_Found' folder with a standardized filename and closes it.
+        Does nothing if the figure is None or has no axes.
+        """
+        if fig is None or not fig.axes:
+            print(f"Skipped saving: no content in figure for face {face_id}")
+            return
 
-    def visualize_rotations(self):
+        output_dir = "Poses_Found"
+        os.makedirs(output_dir, exist_ok=True)
+
+        filename = f"{workpiece_name}_poses_on_face_{face_id}.png"
+        path = os.path.join(output_dir, filename)
+
+        fig.savefig(path, dpi=300, bbox_inches='tight')
+        plt.close(fig)
+        print(f"Saved: {path}")
+
+    def visualize_rotations(self, workpiece_name: str = None):
         """
         Visualizes all rotations grouped by face_id.
         Subplots are laid out to fit the screen size and use maximum space.
@@ -172,12 +191,12 @@ class PoseVisualizer:
         # Try to get screen resolution in inches
         try:
             root = tk.Tk()
+            root.withdraw()  # hide the window but keep the application alive
             screen_px_w = root.winfo_screenwidth()
             screen_px_h = root.winfo_screenheight()
             dpi = plt.rcParams['figure.dpi']
             screen_inch_w = screen_px_w / dpi
             screen_inch_h = screen_px_h / dpi
-            root.destroy()
         except:
             screen_inch_w = 16  # fallback
             screen_inch_h = 9
@@ -204,26 +223,27 @@ class PoseVisualizer:
                 ax = axes[i]
                 legend_lines = [f"Pose {rot_idx}:"]
                 for face_id_i, quat, shadow in rot_idx_groups[rot_idx]:
-                    vertices, faces = self.rotate_mesh(self.original_mesh, quat)
-                    self.plot_mesh(ax, vertices, faces, None)
-                    self.add_reference_planes(ax, vertices, plane_alpha=0.1)
+                    vertices, faces = self._rotate_mesh(self.original_mesh, quat)
+                    self._plot_mesh(ax, vertices, faces, None)
+                    self._add_reference_planes(ax, vertices, plane_alpha=0.1)
                     if shadow is not None:
-                        self.plot_shadow(ax, shadow, title=None)
-                    legend_lines.append(f"↪ Face {face_id_i} | {np.round(quat, 4)}")
+                        self._plot_shadow(ax, shadow, title=None)
+                    legend_lines.append(f"Resting Face {face_id_i} | {np.round(quat, 4)}")
 
                 # Move text inside plot area (top-left corner, just below the box edge)
                 title_text = "\n".join(legend_lines)
                 ax.set_title(title_text, fontsize=8, pad=10)  # pad in points
-                self.add_plot_legend(ax)
+                self._add_plot_legend(ax)
                 plotted_rot_idxs.add(rot_idx)
 
             # Hide unused axes
             for j in range(i + 1, len(axes)):
                 fig.delaxes(axes[j])
 
-            fig.suptitle(f"First Poses Involving Face {face_id}", fontsize=14)
+            fig.suptitle(f"Unique and Symmetric Resting Poses of {workpiece_name} on Face {face_id}", fontsize=14)
             plt.tight_layout(rect=[0, 0, 1, 0.95])
-            plt.show()
+            #plt.show()
+            self._save_pose_figure(fig, workpiece_name, face_id)
 
 
 
