@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 from matplotlib.patches import Patch
+import tkinter as tk
 
 class PoseVisualizer:
     def __init__(self, original_obj_file: str = None, convex_hull_obj_file: str = None, valid_rotations: list = None, xy_shadows: list = None):
@@ -27,13 +28,12 @@ class PoseVisualizer:
         # Store valid rotations
         self.valid_rotations = valid_rotations
 
-    def plot_mesh(self, ax, mesh, title, quat=None):
+    def rotate_mesh(self, mesh, quat = None):
         """
-        Plots a 3D mesh with an optional rotation.
-        :param ax: Matplotlib 3D axis.
-        :param mesh: Trimesh mesh to plot.
-        :param title: Title for the plot.
-        :param rotation: Quaternion to rotate the mesh before plotting.
+        Rotates the vertices of the mesh using the given quaternion.
+        :param mesh: Trimesh mesh whose vertices are to be rotated.
+        :param quat: Quaternion for rotation.
+        :return: Rotated vertices and faces of the mesh.
         """
         vertices = np.array(mesh.vertices)
         faces = np.array(mesh.faces)
@@ -41,8 +41,17 @@ class PoseVisualizer:
         if quat is not None:
             rotation = R.from_quat(quat)
             vertices = rotation.apply(vertices)
-        
-        ax.plot_trisurf(vertices[:, 0], vertices[:, 1], vertices[:, 2], triangles=faces, alpha=0.6, edgecolor='k')
+        return vertices, faces
+
+    def plot_mesh(self, ax, vertices, faces, title):
+        """
+        Plots a 3D mesh with an optional rotation.
+        :param ax: Matplotlib 3D axis.
+        :param mesh: Trimesh mesh to plot.
+        :param title: Title for the plot.
+        :param rotation: Quaternion to rotate the mesh before plotting.
+        """
+        ax.plot_trisurf(vertices[:, 0], vertices[:, 1], vertices[:, 2], triangles=faces, color='orange', alpha=0.6, edgecolor='k')
         ax.set_title(title)
         
         # Normalize the axes
@@ -73,54 +82,57 @@ class PoseVisualizer:
                         triangles=faces, color='gray', alpha=0.5, edgecolor='k')
         ax.set_title(title)
 
-    def add_reference_planes(self, ax, mesh, plane_alpha=0.1):
+    def add_reference_planes(self, ax, vertices, plane_alpha=0.1):
         """
-        Adds two reference planes:
-        - XY plane aligned with the bottom (min Z) and left-most (min X) vertex of the mesh
-        - YZ plane aligned with the left-most vertex and touching the XY plane
-        Plane size is based on the largest edge of the convex hull mesh.
+        Adds two intersecting planes:
+        - XY plane (blue): at lowest Z, clipped to axis X/Y limits
+        - YZ plane (green): at leftmost X, clipped to axis Y/Z limits
         """
 
-        # Get largest convex hull edge
+        # Max edge length from convex hull (fallback size)
         hull_edges = self.convex_hull_mesh.edges_unique
         hull_vertices = self.convex_hull_mesh.vertices
         edge_lengths = np.linalg.norm(hull_vertices[hull_edges[:, 0]] - hull_vertices[hull_edges[:, 1]], axis=1)
         max_edge = np.max(edge_lengths)
-        half = max_edge / 2
 
-        # Get key intersection anchors
-        min_z_vertex = mesh.vertices[np.argmin(mesh.vertices[:, 2])]
-        min_x_vertex = mesh.vertices[np.argmin(mesh.vertices[:, 0])]
-        z_intercept = min_z_vertex[2]
-        x_intercept = min_x_vertex[0]
+        # Anchors
+        min_z_vertex = vertices[np.argmin(vertices[:, 2])]
+        min_x_vertex = vertices[np.argmin(vertices[:, 0])]
+        z0 = min_z_vertex[2]
+        x0 = min_x_vertex[0]
 
-        # --- XY Plane: aligned with min_z and shifted so left edge touches min_x ---
+        # Get axis limits
+        xlim = ax.get_xlim()
+        ylim = ax.get_ylim()
+        zlim = ax.get_zlim()
+
+        # Clip all ranges
+        x_range = [max(xlim[0], x0), min(xlim[1], x0 + max_edge)]
+        y_range = [max(ylim[0], -max_edge), min(ylim[1], max_edge)]
+        z_range = [max(zlim[0], z0), min(zlim[1], z0 + max_edge)]
+
+        # --- XY plane at z = z0 ---
         xy_vertices = np.array([
-            [x_intercept,        -half, z_intercept],
-            [x_intercept + max_edge, -half, z_intercept],
-            [x_intercept + max_edge,  half, z_intercept],
-            [x_intercept,         half, z_intercept],
+            [x_range[0], y_range[0], z0],
+            [x_range[1], y_range[0], z0],
+            [x_range[1], y_range[1], z0],
+            [x_range[0], y_range[1], z0],
         ])
-        xy_faces = np.array([
-            [0, 1, 2],
-            [0, 2, 3]
-        ])
+        xy_faces = np.array([[0, 1, 2], [0, 2, 3]])
         ax.plot_trisurf(xy_vertices[:, 0], xy_vertices[:, 1], xy_vertices[:, 2],
                         triangles=xy_faces, color='blue', alpha=plane_alpha, edgecolor='k')
 
-        # --- YZ Plane: aligned with min_x and bottom edge at z = min_z ---
+        # --- YZ plane at x = x0 ---
         yz_vertices = np.array([
-            [x_intercept, -half, z_intercept],
-            [x_intercept, -half, z_intercept + max_edge],
-            [x_intercept,  half, z_intercept + max_edge],
-            [x_intercept,  half, z_intercept],
+            [x0, y_range[0], z_range[0]],
+            [x0, y_range[0], z_range[1]],
+            [x0, y_range[1], z_range[1]],
+            [x0, y_range[1], z_range[0]],
         ])
-        yz_faces = np.array([
-            [0, 1, 2],
-            [0, 2, 3]
-        ])
+        yz_faces = np.array([[0, 1, 2], [0, 2, 3]])
         ax.plot_trisurf(yz_vertices[:, 0], yz_vertices[:, 1], yz_vertices[:, 2],
                         triangles=yz_faces, color='green', alpha=plane_alpha, edgecolor='k')
+
 
     def add_plot_legend(self, ax):
         """
@@ -137,56 +149,85 @@ class PoseVisualizer:
 
     def visualize_rotations(self):
         """
-        Visualizes all rotations grouped by rot_idx and face_id.
-        Each rotation is shown in its own subplot with a detailed title.
+        Visualizes all rotations grouped by face_id.
+        Subplots are laid out to fit the screen size and use maximum space.
+        Each rot_idx is only plotted once, in the first face it appears in.
         """
 
         zipped = list(zip(self.valid_rotations, self.xy_shadows))
-        entries = [(rot_idx, quat, shadow, face_id) for (rot_idx, face_id, edge_id, quat), shadow in zipped]
+        entries = [(rot_idx, face_id, quat, shadow) for (rot_idx, face_id, edge_id, quat), shadow in zipped]
 
-        # Group by rot_idx or face_id
-        grouped = []
-        used = set()
-        for i, (rot_idx_i, _, _, face_id_i) in enumerate(entries):
-            if i in used:
+        # face_id → list of (rot_idx, quat, shadow)
+        face_to_entries = {}
+        for rot_idx, face_id, quat, shadow in entries:
+            face_to_entries.setdefault(face_id, []).append((rot_idx, quat, shadow))
+
+        # rot_idx → list of (face_id, quat, shadow)
+        rot_idx_groups = {}
+        for rot_idx, face_id, quat, shadow in entries:
+            rot_idx_groups.setdefault(rot_idx, []).append((face_id, quat, shadow))
+
+        plotted_rot_idxs = set()
+
+        # Try to get screen resolution in inches
+        try:
+            root = tk.Tk()
+            screen_px_w = root.winfo_screenwidth()
+            screen_px_h = root.winfo_screenheight()
+            dpi = plt.rcParams['figure.dpi']
+            screen_inch_w = screen_px_w / dpi
+            screen_inch_h = screen_px_h / dpi
+            root.destroy()
+        except:
+            screen_inch_w = 16  # fallback
+            screen_inch_h = 9
+
+        for face_id, entry_list in face_to_entries.items():
+            rot_ids_in_face = sorted({rot_idx for rot_idx, _, _ in entry_list if rot_idx not in plotted_rot_idxs})
+            if not rot_ids_in_face:
                 continue
-            group = []
-            for j, (rot_idx_j, _, _, face_id_j) in enumerate(entries):
-                if j in used:
-                    continue
-                if rot_idx_j == rot_idx_i or face_id_j == face_id_i:
-                    group.append(entries[j])
-                    used.add(j)
-            grouped.append(group)
 
-        for group in grouped:
-            n = len(group)
+            n = len(rot_ids_in_face)
             cols = min(n, 4)
             rows = int(np.ceil(n / cols))
 
-            fig = plt.figure(figsize=(4 * cols, 4 * rows))
+            # Adjust full figure size to fill screen while maintaining aspect ratio
+            subplot_w = screen_inch_w / cols
+            subplot_h = screen_inch_h / rows
+            fig_w = subplot_w * cols
+            fig_h = subplot_h * rows
 
-            for idx, (rot_idx, quat, shadow, face_id) in enumerate(group):
-                ax = fig.add_subplot(rows, cols, idx + 1, projection='3d')
-                self.plot_mesh(ax, self.original_mesh, None, quat=quat)
-                self.add_reference_planes(ax, self.original_mesh)
-                if shadow is not None:
-                    self.plot_shadow(ax, shadow, title=None)
-                
-                # Add legend
+            fig, axes = plt.subplots(rows, cols, figsize=(fig_w, fig_h), subplot_kw={'projection': '3d'})
+            axes = np.array(axes).reshape(-1) if n > 1 else [axes]
+
+            for i, rot_idx in enumerate(rot_ids_in_face):
+                ax = axes[i]
+                legend_lines = [f"Pose {rot_idx}:"]
+                for face_id_i, quat, shadow in rot_idx_groups[rot_idx]:
+                    vertices, faces = self.rotate_mesh(self.original_mesh, quat)
+                    self.plot_mesh(ax, vertices, faces, None)
+                    self.add_reference_planes(ax, vertices, plane_alpha=0.1)
+                    if shadow is not None:
+                        self.plot_shadow(ax, shadow, title=None)
+                    legend_lines.append(f"↪ Face {face_id_i} | {np.round(quat, 4)}")
+
+                # Move text inside plot area (top-left corner, just below the box edge)
+                title_text = "\n".join(legend_lines)
+                ax.set_title(title_text, fontsize=8, pad=10)  # pad in points
                 self.add_plot_legend(ax)
+                plotted_rot_idxs.add(rot_idx)
 
-                # Detailed legend as subplot title
-                title_lines = [
-                    f"Pose Number {rot_idx}",
-                    f"↪ On Resting Face {face_id}",
-                    f"↪ Quaternion {np.round(quat, 4)}"
-                ]
-                ax.set_title("\n".join(title_lines), fontsize=8)
+            # Hide unused axes
+            for j in range(i + 1, len(axes)):
+                fig.delaxes(axes[j])
 
-            fig.suptitle('Grouped by Resting Face and Symmetry', fontsize=14)
-            plt.tight_layout()
+            fig.suptitle(f"First Poses Involving Face {face_id}", fontsize=14)
+            plt.tight_layout(rect=[0, 0, 1, 0.95])
             plt.show()
+
+
+
+
 
 
 

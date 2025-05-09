@@ -5,7 +5,7 @@ from scipy.spatial import ConvexHull
 from trimesh.transformations import quaternion_about_axis, rotation_matrix, reflection_matrix, quaternion_from_matrix, identity_matrix
 
 class PoseFinder:
-    def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-10):
+    def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-5):
         """
         Initialize the PoseFinder with the convex hull OBJ file.
         :param convex_hull_obj_file: Path to the convex hull OBJ file.
@@ -118,7 +118,6 @@ class PoseFinder:
             #if dot > 0:
             if normal[2] > 0:
                 angle = np.pi - angle
-                #angle = (angle + np.pi) % (2 * np.pi)
 
            # Identity rotation
             if np.abs(angle) < 1e-6: 
@@ -190,8 +189,8 @@ class PoseFinder:
             internal_angles.append(angle)
 
         # Step 4: Generate cumulative rotations from the aligned start edge
-        #cumulative_angle = -signed_angles[start_idx]  # initial offset to align start edge with +y
-        cumulative_angle = 0
+        cumulative_angle = signed_angles[start_idx]  # initial offset to align start edge with +y
+        #cumulative_angle = 0
 
         for i in range(len(xy_shadow)):
             edge_idx = (start_idx + i) % len(xy_shadow)
@@ -240,14 +239,15 @@ class PoseFinder:
 
         return combined_rotations, combined_shadows
 
-    def duplicate_remover(self, rotations: list[tuple[int, int, int, np.ndarray]]) -> list[tuple[int, int, int, np.ndarray]]:
+    def duplicate_remover(self, rotations: list[tuple[int, int, int, np.ndarray]], xy_shadows) -> list[tuple[int, int, int, np.ndarray]]:
         """
         Handles duplicate rotations by removing rotations that are too close to each other.
-        :param rotations: List of tuples (pose, valid rotation vector).
-        :return: List of tuples (assigned pose, valid rotation vector).
+        :param rotations: List of tuples (pose, face_id, shadow_id, valid rotation vector) and list of xy_shadow arrays.
+        :return: List of tuples (assigned pose, face_id, shadow_id, valid rotation vector) and list of xy_shadow arrays.
         """
         unique_rotations = {}
         assigned_rotations = []
+        assigned_shadows = []
         pose_count = 0
 
         for index, face_id, edge_id, quat in rotations:
@@ -256,9 +256,10 @@ class PoseFinder:
             if one_zero_rounded_quat not in unique_rotations:
                 unique_rotations[one_zero_rounded_quat] = index
                 assigned_rotations.append((pose_count, face_id, edge_id, one_zero_rounded_quat))
+                assigned_shadows.append(xy_shadows[index])
                 pose_count += 1
         
-        return assigned_rotations
+        return assigned_rotations, assigned_shadows
     
     def symmetry_handler(self, rotations: list[tuple[int, int, int, np.ndarray]]) -> list[tuple[int, int, int, np.ndarray]]:
         """
