@@ -145,21 +145,38 @@ class PoseFinder:
     
     def find_candidate_rotations_by_shadow_edge_alignment(self,xy_shadow: np.ndarray = None) -> tuple[list[tuple[int, int, int, np.ndarray]], list[np.ndarray]]:
         """
-        Generates quaternions rotating around the z-axis that align each shadow edge with the y-axis.
-        The first rotation aligns the edge closest to the y-axis, and the same angular correction is applied to all.
-        
-        :param xy_shadows: (N, 3) array of 2D shadow points with constant z.
-        :return: List of tuples (index, quaternion) where quaternion is [x, y, z, w]
-        :return: List of (M, 3) arrays of 2D shadow vertices on the x-y plane (z=0).
+        Generates quaternions rotating around the z-axis by cumulatively adding internal angles.
+        The starting edge is the one between the leftmost vertex and its next vertex in the CCW-ordered list.
+
+        :param xy_shadow: (N, 3) array of 3D shadow points on the x-y plane (z=0).
+        :return: List of (index, 0, index, quaternion) and corresponding rotated shadows.
         """
         if xy_shadow is None:
-            _, _, vertices = self._compute_full_hull() 
+            _, _, vertices = self._compute_full_hull()
             xy_shadow = self._compute_xy_shadow(vertices)
-        
-        edge_dirs = []
-        xy_shadows = []
-        candidate_rotations = [] ## Identity quaternion [x, y, z, w]
 
+        candidate_rotations = []
+        xy_shadows = []
+
+        # Step 1: Find leftmost vertex (min x)
+        leftmost_idx = np.argmin(xy_shadow[:, 0])
+
+        # Step 2: Define the initial edge from leftmost_idx to (leftmost_idx + 1) % N
+        p1 = xy_shadow[leftmost_idx][:2]
+        p2 = xy_shadow[(leftmost_idx + 1) % len(xy_shadow)][:2]
+        edge_vec = p2 - p1
+        edge_dir = edge_vec / np.linalg.norm(edge_vec)
+
+        # Step 3: Compute rotation to align this edge with +Y axis
+        y_axis = np.array([0, 1])
+        angle = np.arccos(np.clip(np.dot(edge_dir, y_axis), -1.0, 1.0))
+        if np.cross(edge_dir, y_axis) < 0:
+            angle = -angle
+
+        cumulative_angle = angle
+
+        # Step 4: Compute internal angles between edges
+        edge_dirs = []
         for i in range(len(xy_shadow)):
             p1 = xy_shadow[i][:2]
             p2 = xy_shadow[(i + 1) % len(xy_shadow)][:2]
@@ -169,40 +186,25 @@ class PoseFinder:
                 edge_dirs.append(edge / norm)
             else:
                 edge_dirs.append(np.array([0.0, 0.0]))
-
         edge_dirs = np.array(edge_dirs)
 
-        # Step 2: Find index of edge closest to +y
-        y_axis = np.array([0, 1])
-        angles_to_y = [np.arccos(np.clip(np.dot(e, y_axis), -1.0, 1.0)) for e in edge_dirs]
-        signs = [np.sign(np.cross(y_axis, e)) for e in edge_dirs]
-        signed_angles = [a * s for a, s in zip(angles_to_y, signs)]
-        start_idx = np.argmin(np.abs(signed_angles))
-
-        # Step 3: Compute internal angles between consecutive edges
         internal_angles = []
-        for i in range(len(xy_shadow)):
-            prev = edge_dirs[i - 1]  # reverse previous edge (points into vertex)
-            curr = edge_dirs[i]       # current edge (points out from vertex)
-
-            angle = np.arctan2(np.cross(prev, curr), np.dot(prev, curr))  # angle at vertex
+        for i in range(len(edge_dirs)):
+            prev = edge_dirs[i - 1]
+            curr = edge_dirs[i]
+            angle = np.arctan2(np.cross(prev, curr), np.dot(prev, curr))
             internal_angles.append(angle)
 
-        # Step 4: Generate cumulative rotations from the aligned start edge
-        cumulative_angle = signed_angles[start_idx]  # initial offset to align start edge with +y
-        #cumulative_angle = 0
-
+        # Step 5: Apply rotations incrementally
         for i in range(len(xy_shadow)):
-            edge_idx = (start_idx + i) % len(xy_shadow)
             quat = R.from_euler('z', -cumulative_angle).as_quat()
-            cumulative_angle += internal_angles[(edge_idx + 1) % len(xy_shadow)]
-
-            # rotate the shadow by quat
             rotated_shadow = R.from_quat(quat).apply(xy_shadow)
-            # Append the shadow to the list of shadows
-            xy_shadows.append(rotated_shadow)
-            # Append the rotation to the list of candidate rotations
             candidate_rotations.append((i, 0, i, quat))
+            xy_shadows.append(rotated_shadow)
+
+            # Increment angle CCW
+            idx = (leftmost_idx + i + 1) % len(xy_shadow)
+            cumulative_angle += internal_angles[idx]
 
         return candidate_rotations, xy_shadows
 
