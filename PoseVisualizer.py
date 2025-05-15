@@ -21,6 +21,12 @@ class PoseVisualizer:
         self.convex_hull_mesh = trimesh.load_mesh(convex_hull_obj_file)
         self.xy_shadows = xy_shadows
 
+        # fix normals of normal mesh to ensure they point outward
+        self.original_mesh.fix_normals()
+
+        # fix normals of convex hull to ensure they point outward
+        self.convex_hull_mesh.fix_normals()
+
         # Ensure the meshes are centered around the centroid of the convex hull
         centroid = self.convex_hull_mesh.centroid
         self.original_mesh.apply_translation(-centroid)
@@ -232,7 +238,8 @@ class PoseVisualizer:
 
                 # Move text inside plot area (top-left corner, just below the box edge)
                 title_text = "\n".join(legend_lines)
-                ax.set_title(title_text, fontsize=8, pad=10)  # pad in points
+                ax.set_title(title_text, fontsize=8)  # pad in points
+                fig.subplots_adjust(hspace=0.5)    
                 self._add_plot_legend(ax)
                 plotted_rot_idxs.add(rot_idx)
 

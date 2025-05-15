@@ -2,28 +2,23 @@ import trimesh
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial import ConvexHull
-from trimesh.transformations import quaternion_about_axis, rotation_matrix, reflection_matrix, quaternion_from_matrix, identity_matrix
+from scipy.spatial import cKDTree
 
 class PoseFinder:
     def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-5):
         """
         Initialize the PoseFinder with the convex hull OBJ file.
         :param convex_hull_obj_file: Path to the convex hull OBJ file.
+        :param self_obj_file: Path to the self OBJ file.
+        :param tolerance: Numerical tolerance for grouping rotations.
+        :raises ValueError: If the mesh or convex hull meshes are empty or not initialized.
         """
         # Initialize a numerical tolerance for grouping
         self.tolerance = tolerance
 
         self.mesh = trimesh.load_mesh(self_obj_file)
+
         self.convex_hull_mesh = trimesh.load_mesh(convex_hull_obj_file)
-
-        # Ensure the mesh is centered around the centroid of the convex hull
-        centroid = self.convex_hull_mesh.centroid
-
-        self.convex_hull_mesh.apply_translation(-centroid)
-        self.mesh.apply_translation(-centroid)
-
-        # Compute full polygonal face hulls
-        self.full_hull = self._compute_full_hull()
 
         # Check to ensure that the mesh and convex hull meshes are not empty
         if self.mesh.vertices is None or len(self.mesh.vertices) == 0:
@@ -31,7 +26,19 @@ class PoseFinder:
         
         if self.convex_hull_mesh.vertices is None or len(self.convex_hull_mesh.vertices) == 0:
             raise ValueError("Convex hull mesh vertices are not initialized or empty.")
-        
+
+        # fix normals of normal mesh to ensure they point outward
+        self.mesh.fix_normals()
+
+        # fix normals of convex hull to ensure they point outward
+        self.convex_hull_mesh.fix_normals()
+
+        # Ensure the mesh is centered around the centroid of the convex hull
+        centroid = self.convex_hull_mesh.centroid
+
+        self.convex_hull_mesh.apply_translation(-centroid)
+        self.mesh.apply_translation(-centroid)
+
         # Check if at least 3 vertices align with the lowest z-axis (resting face)
         z_min = np.min(self.mesh.vertices[:, 2])
         aligned_vertices = self.mesh.vertices[np.isclose(self.mesh.vertices[:, 2], z_min, atol=self.tolerance)]
@@ -42,46 +49,15 @@ class PoseFinder:
         if not np.all(np.isin(self.convex_hull_mesh.vertices, self.mesh.vertices)):
             raise ValueError("The convex hull mesh is not a convex hull of the original mesh. Please check the convex hull mesh and the original mesh.")
     
-    def _compute_full_hull(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """
-        Build full face polygons by grouping coplanar triangles from the convex hull mesh.
-        Returns:
-            - face_normals: (N, 3) array of outward face normals
-            - face_centers: (N, 3) array of face center points
-            - face_vertices: list of (M_i, 3) arrays of polygon boundary vertices
-            - Attempts to return the full hull in the same form as a trimesh object.
-        """
-        mesh = self.convex_hull_mesh
-        normals = []
-        centers = []
-        verticies = []
-
-        for facet, normal in zip(mesh.facets, mesh.facets_normal):
-            submesh = mesh.submesh([facet], append=True, repair=False)
-            boundary = submesh.outline()
-            if boundary is None or len(boundary.vertices) < 3:
-                continue
-
-            normed_normal = normal / np.linalg.norm(normal)
-            normed_normal = np.where(np.abs(normed_normal) < self.tolerance, 0.0, normed_normal)  # Ensure all zeros are positive
-            center = boundary.vertices.mean(axis=0)
-
-            normals.append(normed_normal)
-            centers.append(center)
-            verticies.append(boundary.vertices)
-        
-        if verticies:
-            verticies = np.vstack(verticies)
-        else:
-            verticies = np.empty((0, 3))
-
-        return np.array(normals), np.array(centers), verticies
-    
-    def _compute_xy_shadow(self, vertices: np.ndarray = None) -> np.ndarray:
+    def _compute_xy_shadow(self, vertices: np.ndarray = None) -> tuple[np.ndarray, np.ndarray]:
         """
         Compute the 2D convex hull shadow (z=0) from a set of 3D vertices.
+        Also computes the internal angles at each shadow vertex, measured towards the centroid.
+
         :param vertices: (N, 3) array of vertex coordinates.
-        :return: (M, 3) array of 3D shadow vertices on the x-y plane (z=0).
+        :return: 
+            - (M, 3) array of 3D shadow vertices on the x-y plane (z=0).
+            - (M,) array of internal angles (radians), each pointing towards the centroid.
         """
         projected_points = vertices[:, :2]
         hull_2d = ConvexHull(projected_points)
@@ -89,84 +65,143 @@ class PoseFinder:
         z_min = np.min(vertices[:, 2])
         shadow_vertices = np.hstack([hull_coords, np.full((len(hull_coords), 1), z_min)])  # z = z_min
 
-        return shadow_vertices
+        # Compute centroid of the shadow polygon
+        centroid = np.mean(hull_coords, axis=0)
 
-    def find_candidate_rotations_by_resting_face_normal_alignment(self) -> tuple[list[tuple[int, int, int, np.ndarray]], list[np.ndarray]]:
+        # Compute internal angles at each vertex, measured towards the centroid
+        angles = []
+        n = len(hull_coords)
+        for i in range(n):
+            prev = hull_coords[i - 1] - hull_coords[i]
+            next = hull_coords[(i + 1) % n] - hull_coords[i]
+            to_centroid = centroid - hull_coords[i]
+
+            # Normalize vectors
+            prev_norm = prev / (np.linalg.norm(prev) + 1e-12)
+            next_norm = next / (np.linalg.norm(next) + 1e-12)
+            centroid_norm = to_centroid / (np.linalg.norm(to_centroid) + 1e-12)
+
+            # Angle between prev and next (internal angle)
+            angle = np.arccos(np.clip(np.dot(prev_norm, next_norm), -1.0, 1.0))
+
+            # Check if centroid is inside the angle (using cross products)
+            cross1 = np.cross(prev_norm, centroid_norm)
+            cross2 = np.cross(centroid_norm, next_norm)
+            # If both cross products have the same sign, centroid is "inside" the angle
+            if cross1 * cross2 >= 0:
+                angles.append(angle)
+            else:
+                angles.append(2 * np.pi - angle)
+
+        return shadow_vertices, np.array(angles)
+
+    def find_candidate_rotations_by_resting_face_normal_alignment(self) -> tuple[list[tuple[int, int, int, tuple[float, float, float, float]]], tuple[np.ndarray, np.ndarray]]:
         """
-        Aligns each face normal to the resting face normal (closest to -Z).
-        Returns candidate rotations as quaternions.
+        Aligns each outward-pointing face normal of the convex hull to the resting face normal (closest to -Z).
+        Returns candidate rotations as quaternions and corresponding XY shadows.
         """
 
-        # Compute the full hull so that we can find the boundaries of the convex hull and the outward face normals
-        face_normals, _, vertices = self._compute_full_hull() 
-        resting_face_idx = np.argmin(np.dot(face_normals, np.array([0, 0, -1])))
-        resting_normal = face_normals[resting_face_idx]
+        mesh = self.convex_hull_mesh
+        face_normals = mesh.face_normals
+        face_centers = mesh.triangles_center
+        vertices = mesh.vertices
 
-        # initialise the outputs of the first candidate which is the identity rotation
-        candidate_rotations = [(0, 0, 0, np.array([0.0, 0.0, 0.0, 1.0]))] ## Identity quaternion [x, y, z, w]
+        # Remove duplicate normals (within tolerance)
+        unique_normals = []
+        unique_centers = []
+        for n in face_normals:
+            if not any(np.allclose(n, un, atol=self.tolerance) for un in unique_normals):
+                unique_normals.append(n)
+                unique_centers.append(face_centers[np.all(face_normals == n, axis=1)][0])
+
+        # Find the face normal closest to -Z
+        z_axis = np.array([0, 0, 1])
+        resting_face_idx = np.argmin(np.dot(unique_normals, z_axis))
+        resting_normal = unique_normals[resting_face_idx]
+        #print(f"Resting face normal: {resting_normal}")
+        #print(f"Resting face center: {unique_centers[resting_face_idx]}")
+        candidate_rotations = [(0, 0, 0, (0.0, 0.0, 0.0, 1.0))]  # Identity rotation as tuple of floats
+
         xy_shadows = [self._compute_xy_shadow(vertices)]
+        
         candidate_count = 1
 
-        for i, normal in enumerate(face_normals):
-            if i == resting_face_idx: #or np.allclose(normal, resting_normal):
+        for i, normal in enumerate(unique_normals):
+            if i == resting_face_idx:
                 continue
 
-            dot = np.clip(np.dot(normal, resting_normal), -1.0, 1.0)
-            angle = np.arccos(dot)
+            try:
+                # Compute rotation that aligns current face normal to the resting normal
+                r, _ = R.align_vectors([resting_normal], [normal])
+                #print(f"Face normal: {normal}")
+                rotated_normal = r.apply(normal)
+                #print(f"Rotated normal: {rotated_normal}")
+                # Apply rotation to both centroid and face center
+                rotated_vertices = r.apply(vertices)
+                rotated_face_center = r.apply(unique_centers[i])
 
-            #if resting face is at the top, we need to extend the angle by 180 degrees to make sure its facing downwards
-            #if dot > 0:
-            if normal[2] > 0:
-                angle = np.pi - angle
+                min_z = np.min(rotated_vertices[:, 2])
 
-           # Identity rotation
-            if np.abs(angle) < 1e-6: 
-                quat = np.array([0.0, 0.0, 0.0, 0.1])  
-            # 180° rotation: axis undefined → use any axis orthogonal to normal
-            elif np.abs(angle - np.pi) < 1e-6:
-                ortho = np.array([1, 0, 0]) if abs(normal[0]) < 0.9 else np.array([0, 1, 0])
-                axis = np.cross(normal, ortho)
-                axis /= np.linalg.norm(axis)
-                quat = R.from_rotvec(axis * angle).as_quat()
-            else:
-                axis = np.cross(normal, resting_normal)
-                axis /= np.linalg.norm(axis)
-                quat = R.from_rotvec(axis * angle).as_quat()
+                #print(f"Rotated face center: {rotated_face_center}, Min Z: {min_z}")
+                #print(f"Unrotated face center: {unique_centers[i]}")
+                
+                quat = r.as_quat()
 
-            candidate_rotations.append((candidate_count,candidate_count, 0, quat))
-            # Apply rotation and compute shadow
+            except Exception:
+                # Handle edge cases (e.g., 180° rotation)
+                if np.dot(normal, resting_normal) < -0.9999:
+                    ortho = np.array([1, 0, 0]) if abs(normal[0]) < 0.9 else np.array([0, 1, 0])
+                    axis = np.cross(normal, ortho)
+                    axis /= np.linalg.norm(axis)
+                    quat = R.from_rotvec(np.pi * axis).as_quat()
+                else:
+                    quat =(0.0, 0.0, 0.0, 1.0)
+
             rotated_vertices = R.from_quat(quat).apply(vertices)
             shadow = self._compute_xy_shadow(rotated_vertices)
             xy_shadows.append(shadow)
 
+            quat = tuple(np.round(quat, decimals=int(np.log10(1/self.tolerance))))
+            quat = tuple(0.0 if abs(x) < self.tolerance else x for x in quat)
+            
+            candidate_rotations.append((candidate_count, candidate_count, 0, quat))
             candidate_count += 1
 
         return candidate_rotations, xy_shadows
     
-    def find_candidate_rotations_by_shadow_edge_alignment(self,xy_shadow: np.ndarray = None) -> tuple[list[tuple[int, int, int, np.ndarray]], list[np.ndarray]]:
+    def find_candidate_rotations_by_shadow_edge_alignment(self, xy_shadow: tuple[np.ndarray, np.ndarray] = None) -> tuple[list[tuple[int, int, int, tuple[float, float, float, float]]], list[np.ndarray]]:
         """
         Generates quaternions rotating around the z-axis by cumulatively adding internal angles.
         The starting edge is the one between the leftmost vertex and its next vertex in the CCW-ordered list.
 
-        :param xy_shadow: (N, 3) array of 3D shadow points on the x-y plane (z=0).
+        :param xy_shadow: Tuple of (N, 3) array of 3D shadow points on the x-y plane (z=0) and (N,) array of internal angles.
         :return: List of (index, 0, index, quaternion) and corresponding rotated shadows.
         """
         if xy_shadow is None:
-            _, _, vertices = self._compute_full_hull()
+            vertices = self.convex_hull_mesh.vertices
             xy_shadow = self._compute_xy_shadow(vertices)
+
+        shadow_vertices, internal_angles = xy_shadow
 
         candidate_rotations = []
         xy_shadows = []
 
         # Step 1: Find leftmost vertex (min x)
-        leftmost_idx = np.argmin(xy_shadow[:, 0])
+        # Find indices of vertices with minimum x and minimum y
+        # Find all indices where x is exactly the minimum x (preserving sign, not just magnitude)
+        min_x = np.min(shadow_vertices[:, 0])
+        leftmost_indices = np.where(shadow_vertices[:, 0] == min_x)[0]
+        # From these, pick the one with the minimum y value
+        bottommost_idx = leftmost_indices[np.argmin(shadow_vertices[leftmost_indices, 1])]
+        #print(f"Leftmost indices: {leftmost_indices}, Chosen index (min y among leftmost): {bottommost_idx}")
 
         # Step 2: Define the initial edge from leftmost_idx to (leftmost_idx + 1) % N
-        p1 = xy_shadow[leftmost_idx][:2]
-        p2 = xy_shadow[(leftmost_idx + 1) % len(xy_shadow)][:2]
+        p1 = shadow_vertices[bottommost_idx][:2]
+        p2 = shadow_vertices[(bottommost_idx - 1) % len(shadow_vertices)][:2]
         edge_vec = p2 - p1
         edge_dir = edge_vec / np.linalg.norm(edge_vec)
-
+        #print(f"Leftmost vertex: {p1}, Next vertex: {p2}, Edge direction: {edge_dir}")
+        
         # Step 3: Compute rotation to align this edge with +Y axis
         y_axis = np.array([0, 1])
         angle = np.arccos(np.clip(np.dot(edge_dir, y_axis), -1.0, 1.0))
@@ -174,41 +209,32 @@ class PoseFinder:
             angle = -angle
 
         cumulative_angle = angle
+        #print(f"Initial angle to align edge with +Y: {np.degrees(angle)} degrees")
 
-        # Step 4: Compute internal angles between edges
-        edge_dirs = []
-        for i in range(len(xy_shadow)):
-            p1 = xy_shadow[i][:2]
-            p2 = xy_shadow[(i + 1) % len(xy_shadow)][:2]
-            edge = p2 - p1
-            norm = np.linalg.norm(edge)
-            if norm > 1e-8:
-                edge_dirs.append(edge / norm)
-            else:
-                edge_dirs.append(np.array([0.0, 0.0]))
-        edge_dirs = np.array(edge_dirs)
+        # Step 4: Apply rotations incrementally using internal_angles
+        n = len(shadow_vertices)
+        for i in range(n):
+            quat = R.from_euler('z', cumulative_angle).as_quat()  # Positive angle for clockwise rotation
+            quat = tuple(np.round(quat, decimals=int(np.log10(1/self.tolerance))))
+            quat = tuple(0.0 if abs(x) < self.tolerance else x for x in quat)
 
-        internal_angles = []
-        for i in range(len(edge_dirs)):
-            prev = edge_dirs[i - 1]
-            curr = edge_dirs[i]
-            angle = np.arctan2(np.cross(prev, curr), np.dot(prev, curr))
-            internal_angles.append(angle)
+            #print(f"Rotation quaternion: {quat}")
+            rotated_shadow = R.from_quat(quat).apply(shadow_vertices)
 
-        # Step 5: Apply rotations incrementally
-        for i in range(len(xy_shadow)):
-            quat = R.from_euler('z', -cumulative_angle).as_quat()
-            rotated_shadow = R.from_quat(quat).apply(xy_shadow)
+            quat = tuple(np.round(quat, decimals=int(np.log10(1/self.tolerance))))
+            quat = tuple(0.0 if abs(x) < self.tolerance else x for x in quat)
+
             candidate_rotations.append((i, 0, i, quat))
             xy_shadows.append(rotated_shadow)
 
-            # Increment angle CCW
-            idx = (leftmost_idx + i + 1) % len(xy_shadow)
-            cumulative_angle += internal_angles[idx]
+            # Increment angle CCW using precomputed internal_angles
+            idx = (bottommost_idx + i) % n
+            cumulative_angle -= np.abs(np.pi - internal_angles[idx])
+            #print(f"Internal Angle: {np.degrees(internal_angles[idx])} degrees, Cumulative Angle: {np.degrees(cumulative_angle)} degrees, index: {idx}")
 
         return candidate_rotations, xy_shadows
 
-    def find_candidate_rotations_by_face_and_shadow_alignment(self) -> tuple[list[tuple[int, int, int, np.ndarray]], list[np.ndarray]]:
+    def find_candidate_rotations_by_face_and_shadow_alignment(self) -> tuple[list[tuple[int, int, int, tuple[float, float, float, float]]], list[np.ndarray]]:
         """
         Generates combined re-orientations by first aligning each face normal to the resting face (facing -Z),
         and then rotating around Z to align a shadow edge with +Y.
@@ -233,37 +259,20 @@ class PoseFinder:
                 # Compose total rotation: shadow_quat * face_quat
                 q_total = R.from_quat(shadow_quat) * R.from_quat(face_quat)
                 q_total = q_total.as_quat()  # Final rotation quaternion
+                #print(f"Combined rotation:{q_total}\nshadow:{shadow_quat}\nface:{face_quat}\nface_id:{face_id}edge_id:{edge_id}")
 
-                combined_rotations.append((candidate_count, face_id, edge_id, q_total))
+                # Do some cleaning
+                q_rounded = tuple(np.round(q_total, decimals=int(np.log10(1/self.tolerance))))  # Round to prevent numerical noise
+                q_rounded_zero = tuple(0.0 if abs(x) < self.tolerance else x for x in q_rounded)  # Ensure all zeros are positive
+
+                combined_rotations.append((candidate_count, face_id, edge_id, q_rounded_zero))
                 combined_shadows.append(shadow_variants[j])
 
                 candidate_count += 1
 
         return combined_rotations, combined_shadows
-
-    def duplicate_remover(self, rotations: list[tuple[int, int, int, np.ndarray]], xy_shadows) -> list[tuple[int, int, int, np.ndarray]]:
-        """
-        Handles duplicate rotations by removing rotations that are too close to each other.
-        :param rotations: List of tuples (pose, face_id, shadow_id, valid rotation vector) and list of xy_shadow arrays.
-        :return: List of tuples (assigned pose, face_id, shadow_id, valid rotation vector) and list of xy_shadow arrays.
-        """
-        unique_rotations = {}
-        assigned_rotations = []
-        assigned_shadows = []
-        pose_count = 0
-
-        for index, face_id, edge_id, quat in rotations:
-            rounded_quat = tuple(np.round(quat, decimals=int(np.log10(1/self.tolerance))))  # Round to prevent numerical noise
-            one_zero_rounded_quat = tuple(0.0 if abs(x) < self.tolerance else x for x in rounded_quat)  # Ensure all zeros are positive
-            if one_zero_rounded_quat not in unique_rotations:
-                unique_rotations[one_zero_rounded_quat] = index
-                assigned_rotations.append((pose_count, face_id, edge_id, one_zero_rounded_quat))
-                assigned_shadows.append(xy_shadows[index])
-                pose_count += 1
-        
-        return assigned_rotations, assigned_shadows
     
-    def symmetry_handler(self, rotations: list[tuple[int, int, int, np.ndarray]]) -> list[tuple[int, int, int, np.ndarray]]:
+    def symmetry_handler(self, rotations: list[tuple[int, int, int, tuple[float,float,float]]]) -> list[tuple[int, int, int, tuple[float,float,float]]]:
         """
         Handles symmetry constraints by sorting by pose and assigning the same pose to symmetrically equivalent rotations.
         This is done by checking if the full mesh has multiple rotationally symmetrically equivalent representations.
@@ -280,17 +289,18 @@ class PoseFinder:
                 # Check for symmetrically equivalent rotations
                 rotation = R.from_quat(quat)
                 rotated_vertices = rotation.apply(self.mesh.vertices)
+                rotated_vertices -= np.mean(rotated_vertices, axis=0)  # Center the rotated vertices
 
                 for check_index, (_, face_id, edge_id, check_quat) in enumerate(rotations):
                     if assigned_rotations[check_index] == -1:  # Only check unassigned rotations
+
                         check_rotation = R.from_quat(check_quat)
                         check_rotated_vertices = check_rotation.apply(self.mesh.vertices)
+                        check_rotated_vertices -= np.mean(check_rotated_vertices, axis=0)  # Center the rotated vertices
 
-                        sorted_rotated_vertices = np.sort(rotated_vertices, axis=0)
-                        sorted_check_rotated_vertices = np.sort(check_rotated_vertices, axis=0)
-
-                        # Check if the vertices are close enough to consider them equivalent
-                        is_close = np.allclose(sorted_rotated_vertices, sorted_check_rotated_vertices, atol=self.tolerance, rtol=0.0)
+                        tree = cKDTree(rotated_vertices)
+                        dists, _ = tree.query(check_rotated_vertices, k=1)
+                        is_close = np.all(dists < self.tolerance)
 
                         if is_close:
                             assigned_rotations[check_index] = assymetric_pose_count
