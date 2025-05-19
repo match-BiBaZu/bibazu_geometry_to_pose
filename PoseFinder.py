@@ -95,10 +95,10 @@ class PoseFinder:
 
         return shadow_vertices, np.array(angles)
 
-    def find_candidate_rotations_by_resting_face_normal_alignment(self) -> tuple[list[tuple[int, int, int, tuple[float, float, float, float]]], tuple[np.ndarray, np.ndarray]]:
+    def find_candidate_rotations_by_resting_face_normal_alignment(self) -> tuple[list[tuple[int, int, int, tuple[float, float, float, float]]],list[np.ndarray],list[np.ndarray]]:
         """
         Aligns each outward-pointing face normal of the convex hull to the resting face normal (closest to -Z).
-        Returns candidate rotations as quaternions and corresponding XY shadows.
+        Returns candidate rotations as quaternions and corresponding XY shadows and their angles.
         """
 
         mesh = self.convex_hull_mesh
@@ -109,6 +109,7 @@ class PoseFinder:
         # Remove duplicate normals (within tolerance)
         unique_normals = []
         unique_centers = []
+
         for n in face_normals:
             if not any(np.allclose(n, un, atol=self.tolerance) for un in unique_normals):
                 unique_normals.append(n)
@@ -118,12 +119,13 @@ class PoseFinder:
         z_axis = np.array([0, 0, 1])
         resting_face_idx = np.argmin(np.dot(unique_normals, z_axis))
         resting_normal = unique_normals[resting_face_idx]
-        #print(f"Resting face normal: {resting_normal}")
-        #print(f"Resting face center: {unique_centers[resting_face_idx]}")
-        candidate_rotations = [(0, 0, 0, (0.0, 0.0, 0.0, 1.0))]  # Identity rotation as tuple of floats
 
-        xy_shadows = [self._compute_xy_shadow(vertices)]
-        
+        # Initialize candidate rotations
+        candidate_rotations = [(0, 0, 0, (0.0, 0.0, 0.0, 1.0))]  # Identity rotation as tuple of float
+        first_shadow, first_shadow_angles = self._compute_xy_shadow(vertices)
+        candidate_shadows = [first_shadow]
+        candidate_shadow_angles = [first_shadow_angles]
+
         candidate_count = 1
 
         for i, normal in enumerate(unique_normals):
@@ -133,20 +135,11 @@ class PoseFinder:
             try:
                 # Compute rotation that aligns current face normal to the resting normal
                 r, _ = R.align_vectors([resting_normal], [normal])
-                #print(f"Face normal: {normal}")
                 rotated_normal = r.apply(normal)
-                #print(f"Rotated normal: {rotated_normal}")
-                # Apply rotation to both centroid and face center
                 rotated_vertices = r.apply(vertices)
                 rotated_face_center = r.apply(unique_centers[i])
-
                 min_z = np.min(rotated_vertices[:, 2])
-
-                #print(f"Rotated face center: {rotated_face_center}, Min Z: {min_z}")
-                #print(f"Unrotated face center: {unique_centers[i]}")
-                
                 quat = r.as_quat()
-
             except Exception:
                 # Handle edge cases (e.g., 180° rotation)
                 if np.dot(normal, resting_normal) < -0.9999:
@@ -155,21 +148,24 @@ class PoseFinder:
                     axis /= np.linalg.norm(axis)
                     quat = R.from_rotvec(np.pi * axis).as_quat()
                 else:
-                    quat =(0.0, 0.0, 0.0, 1.0)
+                    quat = (0.0, 0.0, 0.0, 1.0)
 
             rotated_vertices = R.from_quat(quat).apply(vertices)
-            shadow = self._compute_xy_shadow(rotated_vertices)
-            xy_shadows.append(shadow)
+
+            # Compute the shadow of the rotated vertices
+            shadow, shadow_angles = self._compute_xy_shadow(rotated_vertices)
+            candidate_shadows.append(shadow)
+            candidate_shadow_angles.append(shadow_angles)
 
             quat = tuple(np.round(quat, decimals=int(np.log10(1/self.tolerance))))
             quat = tuple(0.0 if abs(x) < self.tolerance else x for x in quat)
-            
+
             candidate_rotations.append((candidate_count, candidate_count, 0, quat))
             candidate_count += 1
 
-        return candidate_rotations, xy_shadows
+        return candidate_rotations, candidate_shadows, candidate_shadow_angles
     
-    def find_candidate_rotations_by_shadow_edge_alignment(self, xy_shadow: tuple[np.ndarray, np.ndarray] = None) -> tuple[list[tuple[int, int, int, tuple[float, float, float, float]]], list[np.ndarray]]:
+    def find_candidate_rotations_by_shadow_edge_alignment(self, xy_shadow: np.ndarray = None, xy_shadow_angles: np.ndarray = None) -> tuple[list[tuple[int, int, int, tuple[float, float, float, float]]], list[np.ndarray]]:
         """
         Generates quaternions rotating around the z-axis by cumulatively adding internal angles.
         The starting edge is the one between the leftmost vertex and its next vertex in the CCW-ordered list.
@@ -177,27 +173,25 @@ class PoseFinder:
         :param xy_shadow: Tuple of (N, 3) array of 3D shadow points on the x-y plane (z=0) and (N,) array of internal angles.
         :return: List of (index, 0, index, quaternion) and corresponding rotated shadows.
         """
-        if xy_shadow is None:
+        if xy_shadow is None or xy_shadow_angles is None:
             vertices = self.convex_hull_mesh.vertices
-            xy_shadow = self._compute_xy_shadow(vertices)
-
-        shadow_vertices, internal_angles = xy_shadow
+            xy_shadow, xy_shadow_angles = self._compute_xy_shadow(vertices)
 
         candidate_rotations = []
-        xy_shadows = []
+        candidate_shadows = []
 
         # Step 1: Find leftmost vertex (min x)
         # Find indices of vertices with minimum x and minimum y
         # Find all indices where x is exactly the minimum x (preserving sign, not just magnitude)
-        min_x = np.min(shadow_vertices[:, 0])
-        leftmost_indices = np.where(shadow_vertices[:, 0] == min_x)[0]
+        min_x = np.min(xy_shadow[:, 0])
+        leftmost_indices = np.where(xy_shadow[:, 0] == min_x)[0]
         # From these, pick the one with the minimum y value
-        bottommost_idx = leftmost_indices[np.argmin(shadow_vertices[leftmost_indices, 1])]
+        bottommost_idx = leftmost_indices[np.argmin(xy_shadow[leftmost_indices, 1])]
         #print(f"Leftmost indices: {leftmost_indices}, Chosen index (min y among leftmost): {bottommost_idx}")
 
         # Step 2: Define the initial edge from leftmost_idx to (leftmost_idx + 1) % N
-        p1 = shadow_vertices[bottommost_idx][:2]
-        p2 = shadow_vertices[(bottommost_idx - 1) % len(shadow_vertices)][:2]
+        p1 = xy_shadow[bottommost_idx][:2]
+        p2 = xy_shadow[(bottommost_idx - 1) % len(xy_shadow)][:2]
         edge_vec = p2 - p1
         edge_dir = edge_vec / np.linalg.norm(edge_vec)
         #print(f"Leftmost vertex: {p1}, Next vertex: {p2}, Edge direction: {edge_dir}")
@@ -211,28 +205,28 @@ class PoseFinder:
         cumulative_angle = angle
         #print(f"Initial angle to align edge with +Y: {np.degrees(angle)} degrees")
 
-        # Step 4: Apply rotations incrementally using internal_angles
-        n = len(shadow_vertices)
+        # Step 4: Apply rotations incrementally using xy_shadow_angles
+        n = len(xy_shadow)
         for i in range(n):
             quat = R.from_euler('z', cumulative_angle).as_quat()  # Positive angle for clockwise rotation
             quat = tuple(np.round(quat, decimals=int(np.log10(1/self.tolerance))))
             quat = tuple(0.0 if abs(x) < self.tolerance else x for x in quat)
 
             #print(f"Rotation quaternion: {quat}")
-            rotated_shadow = R.from_quat(quat).apply(shadow_vertices)
+            rotated_shadow = R.from_quat(quat).apply(xy_shadow)
 
             quat = tuple(np.round(quat, decimals=int(np.log10(1/self.tolerance))))
             quat = tuple(0.0 if abs(x) < self.tolerance else x for x in quat)
 
             candidate_rotations.append((i, 0, i, quat))
-            xy_shadows.append(rotated_shadow)
+            candidate_shadows.append(rotated_shadow)
 
-            # Increment angle CCW using precomputed internal_angles
+            # Increment angle CCW using precomputed xy_shadow_angles
             idx = (bottommost_idx + i) % n
-            cumulative_angle -= np.abs(np.pi - internal_angles[idx])
-            #print(f"Internal Angle: {np.degrees(internal_angles[idx])} degrees, Cumulative Angle: {np.degrees(cumulative_angle)} degrees, index: {idx}")
+            cumulative_angle -= np.abs(np.pi - xy_shadow_angles[idx])
+            #print(f"Internal Angle: {np.degrees(xy_shadow_angles[idx])} degrees, Cumulative Angle: {np.degrees(cumulative_angle)} degrees, index: {idx}")
 
-        return candidate_rotations, xy_shadows
+        return candidate_rotations, candidate_shadows
 
     def find_candidate_rotations_by_face_and_shadow_alignment(self) -> tuple[list[tuple[int, int, int, tuple[float, float, float, float]]], list[np.ndarray]]:
         """
@@ -241,19 +235,17 @@ class PoseFinder:
 
         Returns:
             candidate_rotations: List of (index, quaternion [x, y, z, w])
-            xy_shadows: List of (N, 3) arrays of rotated 2D shadow vertices in XY plane (z=0)
+            candidate_shadows: List of (N, 3) arrays of rotated 2D shadow vertices in XY plane (z=0)
         """
-        face_rotations, base_xy_shadows = self.find_candidate_rotations_by_resting_face_normal_alignment()
+        face_rotations, base_xy_shadows, base_shadow_angles = self.find_candidate_rotations_by_resting_face_normal_alignment()
         combined_rotations = []
         combined_shadows = []
         candidate_count = 0
 
         for i, (face_id, _, _, face_quat) in enumerate(face_rotations):
-            # Compute rotated shadow under face alignment
-            shadow = base_xy_shadows[i]
 
             # Compute shadow-alignment rotations from this configuration
-            shadow_rotations, shadow_variants = self.find_candidate_rotations_by_shadow_edge_alignment(shadow)
+            shadow_rotations, shadow_variants = self.find_candidate_rotations_by_shadow_edge_alignment(base_xy_shadows[i], base_shadow_angles[i])
 
             for j, (edge_id, _, _, shadow_quat) in enumerate(shadow_rotations):
                 # Compose total rotation: shadow_quat * face_quat
@@ -272,7 +264,7 @@ class PoseFinder:
 
         return combined_rotations, combined_shadows
     
-    def symmetry_handler(self, rotations: list[tuple[int, int, int, tuple[float,float,float]]]) -> list[tuple[int, int, int, tuple[float,float,float]]]:
+    def symmetry_handler(self, rotations: list[tuple[int, int, int, tuple[float,float,float]]], symmetry_tolerance: float = 0.1) -> list[tuple[int, int, int, tuple[float,float,float]]]:
         """
         Handles symmetry constraints by sorting by pose and assigning the same pose to symmetrically equivalent rotations.
         This is done by checking if the full mesh has multiple rotationally symmetrically equivalent representations.
@@ -300,9 +292,8 @@ class PoseFinder:
 
                         tree = cKDTree(rotated_vertices)
                         dists, _ = tree.query(check_rotated_vertices, k=1)
-                        is_close = np.all(dists < self.tolerance)
 
-                        if is_close:
+                        if max(dists) < symmetry_tolerance:
                             assigned_rotations[check_index] = assymetric_pose_count
 
                 assymetric_pose_count += 1

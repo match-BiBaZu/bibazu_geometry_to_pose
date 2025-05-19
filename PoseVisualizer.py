@@ -234,7 +234,8 @@ class PoseVisualizer:
                     self._add_reference_planes(ax, vertices, plane_alpha=0.1)
                     if shadow is not None:
                         self._plot_shadow(ax, shadow, title=None)
-                    legend_lines.append(f"Resting Face {face_id_i} | Quaternion [x,y,z,w] {np.round(quat, 4)}")
+                    legend_lines.append(f"Resting Face {face_id_i}")
+                    legend_lines.append(f"Quaternion [x,y,z,w] {np.round(quat, 4)}")
 
                 # Move text inside plot area (top-left corner, just below the box edge)
                 title_text = "\n".join(legend_lines)

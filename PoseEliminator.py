@@ -88,11 +88,13 @@ class PoseEliminator(PoseFinder):
         """
         stable_rotations = []
         stable_shadows = []
+        pose_count = 0
 
         for index, face_id, edge_id, quat in rotations:
             if self._is_stable_by_centroid(quat):
-                stable_rotations.append((index, face_id, edge_id, quat))
+                stable_rotations.append((pose_count, face_id, edge_id, quat))
                 stable_shadows.append(xy_shadows[index])
+                pose_count += 1
         
         return stable_rotations, stable_shadows
     
