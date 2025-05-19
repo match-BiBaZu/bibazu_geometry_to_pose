@@ -153,6 +153,15 @@ class PoseVisualizer:
         ]
         ax.legend(handles=legend_elements, loc='upper left', fontsize='x-small')
 
+    def _plot_centroid(self, ax, vertices: np.ndarray, faces: np.ndarray, title: str = None):
+        """
+        Plots the centroid of the rotated mesh vertices as a red dot.
+        """
+        # Plot the volume centroid (center of mass) of the mesh
+        centroid = trimesh.Trimesh(vertices=vertices, faces=faces).center_mass
+        ax.scatter([centroid[0]], [centroid[1]], [centroid[2]],
+                   color='red', s=60, marker='o', edgecolors='black', linewidths=0.5, zorder=10)
+
     def _save_pose_figure(self, fig, workpiece_name: str, face_id: int):
         """
         Saves the figure to the 'Poses_Found' folder with a standardized filename and closes it.
@@ -234,6 +243,7 @@ class PoseVisualizer:
                     self._add_reference_planes(ax, vertices, plane_alpha=0.1)
                     if shadow is not None:
                         self._plot_shadow(ax, shadow, title=None)
+                    self._plot_centroid(ax, vertices, faces, title=None)
                     legend_lines.append(f"Resting Face {face_id_i}")
                     legend_lines.append(f"Quaternion [x,y,z,w] {np.round(quat, 4)}")
 

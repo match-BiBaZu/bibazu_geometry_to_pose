@@ -21,6 +21,7 @@ def obj_convex_hull_extractor(input_obj_file: str, output_obj_file: str):
 
     # Create a new trimesh object
     convex_hull_mesh = trimesh.Trimesh(vertices=hull_vertices, faces=hull_faces)
+
     
     # Export the convex hull as an OBJ file
     convex_hull_mesh.export(output_obj_file)

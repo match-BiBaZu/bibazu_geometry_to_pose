@@ -4,9 +4,10 @@ from scipy.spatial.transform import Rotation as R
 from scipy.spatial import ConvexHull
 from PoseFinder import PoseFinder
 from matplotlib.path import Path
+import matplotlib.pyplot as plt
 
 class PoseEliminator(PoseFinder):
-    def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-6):
+    def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-5):
         """
         Initialize the PoseEliminator with the convex hull OBJ file.
         :param convex_hull_obj_file: Path to the convex hull OBJ file.
@@ -15,13 +16,13 @@ class PoseEliminator(PoseFinder):
         
         # Additional initialization (if any) can go here
 
-    def _is_stable_by_centroid(self, rotation_vector: np.ndarray) -> bool:
+    def _is_stable_by_center_mass(self, rotation_vector: np.ndarray) -> bool:
         """
-        Checks if the centroid's (x, y) coordinates, after applying the given rotation,
+        Checks if the center_mass's (x, y) coordinates, after applying the given rotation,
         fall within the bounds of the resting plane (the face in contact with the ground).
         Assumes the resting plane is the XY plane after rotation.
         :param rotation_vector: Rotation to apply to the mesh.
-        :return: True if centroid projects inside the resting plane polygon, False otherwise.
+        :return: True if center_mass projects inside the resting plane polygon, False otherwise.
         """
         # Rotate the mesh
         rotated_mesh = self.mesh.copy()
@@ -30,35 +31,45 @@ class PoseEliminator(PoseFinder):
         rot_matrix[:3, :3] = rotation.as_matrix()
         rotated_mesh.apply_transform(rot_matrix)
 
-        # Find the lowest face (resting plane) after rotation
+       # Find vertices near min Z
         z_coords = rotated_mesh.vertices[:, 2]
         min_z = np.min(z_coords)
-        # Faces whose all vertices are at min_z (within tolerance)
-        resting_faces = []
-        for face in rotated_mesh.faces:
-            if np.all(np.abs(z_coords[face] - min_z) < self.tolerance):
-                resting_faces.append(face)
-        if not resting_faces:
+        
+        # Select only vertices near the lowest Z value (resting surface)
+        resting_indices = np.where(np.abs(z_coords - min_z) < self.tolerance)[0]
+        resting_vertices = rotated_mesh.vertices[resting_indices]
+
+        # Project to XY and remove duplicates
+        projected_points = np.unique(resting_vertices[:, :2], axis=0)
+
+        # Need at least 3 unique points
+        if projected_points.shape[0] < 3:
             return False
 
-        # Get all vertices of the resting plane
-        resting_vertices = np.unique(np.concatenate(resting_faces))
-        resting_xy = rotated_mesh.vertices[resting_vertices][:, :2]
+        # Project center_mass to XY
+        center_mass = rotated_mesh.center_mass[:2]
 
-        # Project centroid to XY
-        centroid = rotated_mesh.centroid[:2]
-
-        # Use ConvexHull to get the 2D polygon of the resting plane
-        if len(resting_xy) < 3:
-            return False  # Not a valid plane
-        hull = ConvexHull(resting_xy)
-        hull_points = resting_xy[hull.vertices]
+        # Use ConvexHull to get the 2D polygon of the merged resting faces
+        hull = ConvexHull(projected_points)
+        hull_points = projected_points[hull.vertices]
 
         # Point-in-polygon test using matplotlib.path
         path = Path(hull_points)
-        return path.contains_point(centroid)
 
+        is_inside = path.contains_point(center_mass, radius=self.tolerance)
+        #print(f"Center of mass {center_mass}.")
 
+        # Diagnostic plot (always shown)
+        #plt.figure()
+        #plt.plot(*hull_points.T, 'k--', lw=1, label='Support Polygon')
+        #plt.plot(center_mass[0], center_mass[1],
+        #        'go' if is_inside else 'ro', label='Center of Mass')
+        #plt.gca().set_aspect('equal')
+        #plt.legend()
+        #plt.title(f"Stability Check: {'Stable' if is_inside else 'Unstable'}")
+        #plt.show()
+
+        return is_inside
     
     def remove_duplicates(self, rotations: list[tuple[int, int, int, np.ndarray]], xy_shadows) -> list[tuple[int, int, int, np.ndarray]]:
         """
@@ -91,7 +102,10 @@ class PoseEliminator(PoseFinder):
         pose_count = 0
 
         for index, face_id, edge_id, quat in rotations:
-            if self._is_stable_by_centroid(quat):
+            #print(f"Checking pose {index} for stability...")
+            is_stable = self._is_stable_by_center_mass(quat)
+            if is_stable:
+                #print(f"Pose {index} is stable.")
                 stable_rotations.append((pose_count, face_id, edge_id, quat))
                 stable_shadows.append(xy_shadows[index])
                 pose_count += 1
