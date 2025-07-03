@@ -5,6 +5,7 @@ from stl_to_obj_converter import stl_to_obj_converter
 from PoseFinder import PoseFinder
 from PoseEliminator import PoseEliminator
 from PoseVisualizer import PoseVisualizer
+import os
 
 
 # Get the current script's directory
@@ -26,7 +27,9 @@ workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl4a','Qf1i
 #List of workpieces with rounded features that are likely to appear in the convex hull
 #rounded_workpiece_names = ['Dk2a','Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl2a','Kl4i','Qf2a','Qk1a','Ql1i','Ql4i','Rf1a','Rf3a','Rk1a','Rk3a','Rl1a','Rl4i']
 
-#workpiece_names =['Df1a','Df4a','Df2i']
+workpiece_names =['Df1a','Df4a','Df2i']
+workpiece_names =['Rl4i','Ql4i','Qf4i','Df4a','Rk2i']
+
 # Get the workpiece name you want to find poses for
 #workpiece_name = 'Teil_2'
 
@@ -58,6 +61,8 @@ for workpiece_name in workpiece_names:
 
     # Find unique poses by considering symmetry with an adjustable tolerance, this is set for workpieces with feature sizes between 0.1 and 0.03 cm
     symmetrically_unique_rotations = pose_finder.symmetry_handler(stable_rotations,1)
+
+    pose_finder.write_candidate_rotations_to_file(symmetrically_unique_rotations, str(workpiece_name + '_candidate_rotations.csv'))
 
     # Initialize the PoseVisualizer with the original and convex hull OBJ files and valid rotations
     pose_visualizer = PoseVisualizer(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '_convex_hull.obj')), symmetrically_unique_rotations, stable_shadows)

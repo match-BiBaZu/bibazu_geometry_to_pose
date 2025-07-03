@@ -300,3 +300,15 @@ class PoseFinder:
 
         # Return the assigned rotations in the same order as the input
         return [(assigned_rotations[i], rotations[i][1], rotations[i][2], quat) for i, (_, _, _, quat) in enumerate(rotations)]
+
+    def write_candidate_rotations_to_file(self, candidate_rotations: list[tuple[int, int, int, tuple[float, float, float, float]]], output_file: str):
+        """
+        Writes the candidate rotations to a file in a readable format.
+        :param candidate_rotations: List of candidate rotations.
+        :param output_file: Path to the output file.
+        """
+        with open(output_file, 'w') as f:
+            f.write("PoseID,FaceID,EdgeID,QuatX,QuatY,QuatZ,QuatW\n")
+            # Write each rotation in the format: index, face_id, edge_id, quaternion (
+            for rotation in candidate_rotations:
+                f.write(f"{rotation[0]},{rotation[1]},{rotation[2]},{rotation[3][0]},{rotation[3][1]},{rotation[3][2]},{rotation[3][3]}\n")
