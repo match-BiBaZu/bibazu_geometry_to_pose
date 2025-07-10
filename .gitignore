@@ -169,3 +169,6 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Ignore all of the workpiece files
+Werkstücke_STL_grob/*
