@@ -5,7 +5,6 @@ from stl_to_obj_converter import stl_to_obj_converter
 from PoseFinder import PoseFinder
 from PoseEliminator import PoseEliminator
 from PoseVisualizer import PoseVisualizer
-import os
 
 
 # Get the current script's directory
