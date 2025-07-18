@@ -1,6 +1,5 @@
 # bibazu_geometry_to_pose
 
-**Purpose – one sentence**
 Determine every *geometrically possible* resting pose of a rigid 3‑D part on a slide such that
 
 * the part **rests on one of its convex‑hull faces** (bottom plane) and
