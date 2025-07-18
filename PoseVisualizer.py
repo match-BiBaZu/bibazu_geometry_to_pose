@@ -181,6 +181,32 @@ class PoseVisualizer:
         plt.close(fig)
         print(f"Saved: {path}")
 
+    def _add_coordinate_axes(self, ax, scale=0.10, offset_ratio=0.04, zorder=10):
+            """
+            Draw XYZ arrows with length = *scale* × max(x‑range, y‑range, z‑range).
+            """
+            # Current limits after you've called set_xlim / set_ylim / set_zlim
+            x0, x1 = ax.get_xlim3d()
+            y0, y1 = ax.get_ylim3d()
+            z0, z1 = ax.get_zlim3d()
+
+            max_range = max(x1 - x0, y1 - y0, z1 - z0)
+            length    = scale * max_range          # arrow length
+
+            origin = np.array([x0, y0, z0]) + offset_ratio * np.array([x1 - x0,
+                                                                    y1 - y0,
+                                                                    z1 - z0])
+
+            # Three arrows
+            ax.quiver(*origin, length, 0,      0,      color='r', linewidth=1.2, zorder=zorder)
+            ax.quiver(*origin, 0,      length, 0,      color='g', linewidth=1.2, zorder=zorder)
+            ax.quiver(*origin, 0,      0,      length, color='b', linewidth=1.2, zorder=zorder)
+
+            # Labels
+            ax.text(*(origin + [length, 0, 0]), 'X', color='r', fontsize=7, va='bottom', ha='left', zorder=zorder+1)
+            ax.text(*(origin + [0, length, 0]), 'Y', color='g', fontsize=7, va='bottom', ha='left', zorder=zorder+1)
+            ax.text(*(origin + [0, 0, length]), 'Z', color='b', fontsize=7, va='bottom', ha='left', zorder=zorder+1)
+
     def visualize_rotations(self, workpiece_name: str = None):
         """
         Visualizes all rotations grouped by face_id.
@@ -244,6 +270,7 @@ class PoseVisualizer:
                     if shadow is not None:
                         self._plot_shadow(ax, shadow, title=None)
                     self._plot_centroid(ax, vertices, faces, title=None)
+                    self._add_coordinate_axes(ax)
                     legend_lines.append(f"Resting Face {face_id_i}")
                     legend_lines.append(f"Quaternion [x,y,z,w] {np.round(quat, 4)}")
 

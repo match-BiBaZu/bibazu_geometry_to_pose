@@ -67,7 +67,7 @@ Outputs appear next to each workpiece:
 | **matplotlib ≥ 4.1** | 3‑D & 2‑D plots                       | `pip install matplotlib`                  |
 | **bpy ≥ 3.6**        | Blender API for STL→OBJ               | `pip install bpy` *or* run inside Blender |
 | **tkinter**          | screen size (std‑lib on most distros) | –                                         |
-| **networkx ≥ 3.5**   | graph algorithms (symmetry merge)      | `pip install networkx`                    |
+| **networkx ≥ 3.5**   | graph algorithms (symmetry merge)     | `pip install networkx`                    |
 
 > **Tip**  If running on a headless server you can skip the STL step by providing OBJ files directly.
 
