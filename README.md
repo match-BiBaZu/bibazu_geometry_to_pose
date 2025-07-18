@@ -92,6 +92,4 @@ print(f"{len(stable)} stable poses")
 
 ---
 
-## Citation / License
-
-*Add your license information here (e.g. MIT)*
+## MIT License
