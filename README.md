@@ -5,7 +5,13 @@ Determine every *geometrically possible* resting pose of a rigid 3‑D part on a
 * the part **rests on one of its convex‑hull faces** (bottom plane) and
 * **exactly three vertices** touch the opposite slide surface (top plane).
 
-The scripts convert common mesh formats, extract a convex hull, search the orientation space, prune unstable or duplicate solutions and finally export a CSV + PNG visualisations for each unique pose.
+The scripts convert common mesh formats, extract a convex hull, search the orientation space, prune unstable or duplicate solutions and finally export a CSV + PNG visualisations for each unique pose. The output plots should look like as the examples for Teil 5, shown below:
+<img width="5772" height="2464" alt="Teil_5_poses_on_face_0" src="https://github.com/user-attachments/assets/5b26c106-30a4-4be3-8a11-243ae30976df" />
+<img width="5772" height="2464" alt="Teil_5_poses_on_face_1" src="https://github.com/user-attachments/assets/1ba06ef8-3b82-4db5-8d44-60ab6c8f2eb2" />
+<img width="5772" height="2464" alt="Teil_5_poses_on_face_2" src="https://github.com/user-attachments/assets/b4e0bfce-d3f6-4216-b433-18424c3851d6" />
+<img width="5772" height="2464" alt="Teil_5_poses_on_face_4" src="https://github.com/user-attachments/assets/032bf715-239f-43a1-bf71-1aee9402094d" />
+<img width="5772" height="2464" alt="Teil_5_poses_on_face_5" src="https://github.com/user-attachments/assets/6cadbb24-ad20-4e30-a42a-effcc09b2b9b" />
+
 
 ---
 
