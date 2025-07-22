@@ -65,7 +65,7 @@ Outputs appear next to each workpiece:
 
 | Package              | Reason                                | Install                                   |
 | -------------------- | ------------------------------------- | ----------------------------------------- |
-| **numpy ≥ 2.0**      | maths & array ops                     | `pip install numpy`                       |
+| **numpy < 2.0**      | maths & array ops                     | `pip install numpy<2`                       |
 | **scipy ≥ 1.14**     | convex hull, rotations                | `pip install scipy`                       |
 | **trimesh ≥ 4.2**    | mesh IO & geometry                    | `pip install trimesh`                     |
 | **matplotlib ≥ 4.1** | 3‑D & 2‑D plots                       | `pip install matplotlib`                  |

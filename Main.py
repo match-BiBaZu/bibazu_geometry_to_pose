@@ -28,6 +28,7 @@ workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl4a','Qf1i
 
 workpiece_names =['Df1a','Df4a','Df2i']
 workpiece_names =['Rl4i','Ql4i','Qf4i','Df4a','Rk2i']
+workpiece_names =['Rk2i']
 
 # Get the workpiece name you want to find poses for
 #workpiece_name = 'Teil_2'

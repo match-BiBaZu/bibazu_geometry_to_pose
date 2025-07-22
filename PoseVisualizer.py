@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 from matplotlib.patches import Patch
-import tkinter as tk
+from mpl_toolkits.mplot3d import proj3d
 import os
 
 class PoseVisualizer:
@@ -58,7 +58,7 @@ class PoseVisualizer:
         :param title: Title for the plot.
         :param rotation: Quaternion to rotate the mesh before plotting.
         """
-        ax.plot_trisurf(vertices[:, 0], vertices[:, 1], vertices[:, 2], triangles=faces, color='orange', alpha=0.6, edgecolor='k')
+        ax.plot_trisurf(vertices[:, 0], vertices[:, 1], vertices[:, 2], triangles=faces, color='orange', alpha=0.2, edgecolor='k')
         ax.set_title(title)
         
         # Normalize the axes
@@ -160,7 +160,7 @@ class PoseVisualizer:
         # Plot the volume centroid (center of mass) of the mesh
         centroid = trimesh.Trimesh(vertices=vertices, faces=faces).center_mass
         ax.scatter([centroid[0]], [centroid[1]], [centroid[2]],
-                   color='red', s=60, marker='o', edgecolors='black', linewidths=0.5, zorder=10)
+                   color='red', s=60, marker='o', edgecolors='black', linewidths=0.5, zorder=100)
 
     def _save_pose_figure(self, fig, workpiece_name: str, face_id: int):
         """
@@ -230,17 +230,9 @@ class PoseVisualizer:
         plotted_rot_idxs = set()
 
         # Try to get screen resolution in inches
-        try:
-            root = tk.Tk()
-            root.withdraw()  # hide the window but keep the application alive
-            screen_px_w = root.winfo_screenwidth()
-            screen_px_h = root.winfo_screenheight()
-            dpi = plt.rcParams['figure.dpi']
-            screen_inch_w = screen_px_w / dpi
-            screen_inch_h = screen_px_h / dpi
-        except:
-            screen_inch_w = 16  # fallback
-            screen_inch_h = 9
+
+        screen_inch_w = 16  # fallback
+        screen_inch_h = 9
 
         for face_id, entry_list in face_to_entries.items():
             rot_ids_in_face = sorted({rot_idx for rot_idx, _, _ in entry_list if rot_idx not in plotted_rot_idxs})
