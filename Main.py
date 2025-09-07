@@ -2,6 +2,7 @@ from pathlib import Path
 from obj_convex_hull_extractor import obj_convex_hull_extractor
 from obj_to_ply_converter import obj_to_ply_converter
 from stl_to_obj_converter import stl_to_obj_converter
+from step_find_largest_cylinder import step_find_largest_cylinder
 from PoseFinder import PoseFinder
 from PoseEliminator import PoseEliminator
 from PoseVisualizer import PoseVisualizer
@@ -36,7 +37,10 @@ workpiece_names = rounded_workpiece_names
 # Get the workpiece name you want to find poses for
 #workpiece_name = 'Teil_2'
 
-for workpiece_name in workpiece_names: 
+for workpiece_name in workpiece_names:
+
+    # Use the original STEP file to find the largest cylinder or circle edge
+    step_find_largest_cylinder(str(workpiece_path / (workpiece_name + '.STEP')), str(workpiece_path / (workpiece_name + '_cylinder_properties.csv')))
 
     # Convert the STL file to an OBJ file
     stl_to_obj_converter(str(workpiece_path / (workpiece_name + '.STL')), str(workpiece_path / (workpiece_name + '.obj')), 1, 1.0)
