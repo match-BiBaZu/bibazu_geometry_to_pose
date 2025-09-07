@@ -24,11 +24,14 @@ workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl4a','Kf1i
 workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl4a','Qf1i','Qf2a','Qf4i','Qk1a','Qk2i','Qk4a','Ql1i','Ql2a','Ql4i','Rf1a','Rf2i','Rf4i','Rk1a','Rk2i','Rk3a','Rk4i','Rl1a','Rl2i','Rl3a','Rl4i']
 
 #List of workpieces with rounded features that are likely to appear in the convex hull
-#rounded_workpiece_names = ['Dk2a','Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl2a','Kl4i','Qf2a','Qk1a','Ql1i','Ql4i','Rf1a','Rf3a','Rk1a','Rk3a','Rl1a','Rl4i']
+rounded_workpiece_names = ['Dk2a','Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl2a','Kl4i','Qf2a','Qk1a','Ql1i','Ql4i','Rf1a','Rf3a','Rk1a','Rk3a','Rl1a','Rl4i']
 
 workpiece_names =['Df1a','Df4a','Df2i']
 workpiece_names =['Rl4i','Ql4i','Qf4i','Df4a','Rk2i']
-workpiece_names =['Rk2i']
+workpiece_names =['Rl2i','Df2i','Dk4i','Dl4a','Qk4a','Rf4i','Rk4i','Rf2i','Dl2i']
+workpiece_names =['Qf2a']
+workpiece_names = rounded_workpiece_names
+
 
 # Get the workpiece name you want to find poses for
 #workpiece_name = 'Teil_2'
