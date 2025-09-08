@@ -33,4 +33,4 @@ def stl_to_obj_converter(stl_filepath, obj_filepath, scale=0.01, simplify_ratio=
     bpy.ops.object.modifier_apply(modifier=decimate_mod.name)
 
     # Export as OBJ file
-    bpy.ops.wm.obj_export(filepath=obj_filepath, forward_axis='NEGATIVE_Y', up_axis='Z', global_scale=scale) # Blender like co-ordinate system
+    bpy.ops.wm.obj_export(filepath=obj_filepath, forward_axis='Y', up_axis='Z', global_scale=scale) # Blender like co-ordinate system

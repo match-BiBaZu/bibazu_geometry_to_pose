@@ -3,11 +3,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as R
 from matplotlib.patches import Patch
+from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d import proj3d
 import os
 
+
 class PoseVisualizer:
-    def __init__(self, original_obj_file: str = None, convex_hull_obj_file: str = None, valid_rotations: list = None, xy_shadows: list = None):
+    def __init__(self, original_obj_file: str = None, convex_hull_obj_file: str = None, valid_rotations: list = None, xy_shadows: list = None, cylinder_axis_params: list | None = None):
         """
         Initialize the PoseVisualizer with original and convex hull OBJ files and valid rotations.
         :param original_obj_file: Path to the original OBJ file.
@@ -29,11 +31,21 @@ class PoseVisualizer:
 
         # Ensure the meshes are centered around the centroid of the convex hull
         centroid = self.convex_hull_mesh.centroid
+
         self.original_mesh.apply_translation(-centroid)
         self.convex_hull_mesh.apply_translation(-centroid)
-
+        
         # Store valid rotations
         self.valid_rotations = valid_rotations
+
+        # Store cylinder axis parameters by rotation index for easy access during plotting
+        self.cylinder_axis_params = cylinder_axis_params or [None] * len(valid_rotations)
+
+        # Map rot_idx → cylinder axis ((ox,oy,oz),(dx,dy,dz)) for quick access
+        self._cyl_axis_by_rot_idx = {}
+        for (rot_tuple, cap) in zip(valid_rotations, self.cylinder_axis_params):
+            rot_idx = rot_tuple[0]  # (pose_id, face_id, edge_id, quat)
+            self._cyl_axis_by_rot_idx[rot_idx] = cap
 
     def _rotate_mesh(self, mesh, quat = None):
         """
@@ -149,7 +161,8 @@ class PoseVisualizer:
             Patch(facecolor='blue', edgecolor='k', label='Slide Edge XY'),
             Patch(facecolor='green', edgecolor='k', label='Slide Edge YZ'),
             Patch(facecolor='gray', edgecolor='k', label='Convex Hull Shadow'),
-            Patch(facecolor='orange', edgecolor='k', label='Workpiece')  # assuming mesh color is orange
+            Patch(facecolor='orange', edgecolor='k', label='Workpiece'),  # assuming mesh color is orange
+            Line2D([0],[0], color='m', lw=2, label='Cylinder Axis'),
         ]
         ax.legend(handles=legend_elements, loc='upper left', fontsize='x-small')
 
@@ -207,6 +220,36 @@ class PoseVisualizer:
             ax.text(*(origin + [0, length, 0]), 'Y', color='g', fontsize=7, va='bottom', ha='left', zorder=zorder+1)
             ax.text(*(origin + [0, 0, length]), 'Z', color='b', fontsize=7, va='bottom', ha='left', zorder=zorder+1)
 
+    def _add_cylinder_axis(self, ax, axis_params, scale=1.0, zorder=12):
+        """
+        Draw cylinder axis as a centered segment of length = scale * max_range,
+        where max_range matches the coordinate axes sizing.
+        axis_params: ((ox,oy,oz), (dx,dy,dz)) in the *rotated* frame.
+        """
+        if axis_params is None:
+            return
+        (ox, oy, oz), (dx, dy, dz) = axis_params
+        d = np.array([dx, dy, dz], dtype=float)
+        n = np.linalg.norm(d)
+        if n == 0:
+            return
+        d = d / n
+
+        # Use current axis limits (same basis as _add_coordinate_axes)
+        x0, x1 = ax.get_xlim3d()
+        y0, y1 = ax.get_ylim3d()
+        z0, z1 = ax.get_zlim3d()
+        max_range = max(x1 - x0, y1 - y0, z1 - z0)
+        length = scale * max_range
+
+        p0 = np.array([ox, oy, oz]) - 0.5 * length * d
+        p1 = np.array([ox, oy, oz]) + 0.5 * length * d
+
+        ax.plot([p0[0], p1[0]], [p0[1], p1[1]], [p0[2], p1[2]],
+                linewidth=2.0, color='m', zorder=zorder)
+        # Mark origin point of axis for clarity
+        ax.scatter([ox], [oy], [oz], color='m', s=18, zorder=zorder+1)
+
     def visualize_rotations(self, workpiece_name: str = None):
         """
         Visualizes all rotations grouped by face_id.
@@ -263,6 +306,10 @@ class PoseVisualizer:
                         self._plot_shadow(ax, shadow, title=None)
                     self._plot_centroid(ax, vertices, faces, title=None)
                     self._add_coordinate_axes(ax)
+
+                    # draw cylinder axis for this pose (if available)
+                    self._add_cylinder_axis(ax, self._cyl_axis_by_rot_idx.get(rot_idx), scale=0.10)
+
                     legend_lines.append(f"Resting Face {face_id_i}")
                     legend_lines.append(f"Quaternion [x,y,z,w] {np.round(quat, 4)}")
 

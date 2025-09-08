@@ -2,23 +2,32 @@ import trimesh
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial import ConvexHull
+from pathlib import Path
+import csv
 from scipy.spatial import cKDTree
 
 class PoseFinder:
-    def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-5):
+    def __init__(self, convex_hull_obj_file: str, obj_file: str, tolerance: float = 1e-5):
         """
         Initialize the PoseFinder with the convex hull OBJ file.
         :param convex_hull_obj_file: Path to the convex hull OBJ file.
-        :param self_obj_file: Path to the self OBJ file.
+        :param obj_file: Path to the OBJ file.
         :param tolerance: Numerical tolerance for grouping rotations.
         :raises ValueError: If the mesh or convex hull meshes are empty or not initialized.
         """
+        self.obj_stem = Path(obj_file).stem
+
         # Initialize a numerical tolerance for grouping
         self.tolerance = tolerance
 
-        self.mesh = trimesh.load_mesh(self_obj_file)
+        self.mesh = trimesh.load_mesh(obj_file)
 
         self.convex_hull_mesh = trimesh.load_mesh(convex_hull_obj_file)
+
+        # Cylinder data (from CSV); None if not present
+        self.cylinder_radius: float | None = None
+        self._cyl_axis_origin: np.ndarray | None = None  # world before rotation (model frame)
+        self._cyl_axis_dir: np.ndarray | None = None     # unit vector
 
         # Check to ensure that the mesh and convex hull meshes are not empty
         if self.mesh.vertices is None or len(self.mesh.vertices) == 0:
@@ -39,6 +48,7 @@ class PoseFinder:
         self.convex_hull_mesh.apply_translation(-centroid)
         self.mesh.apply_translation(-centroid)
 
+        self._load_cylinder_from_csv(-centroid)
         # Check if at least 3 vertices align with the lowest z-axis (resting face)
         z_min = np.min(self.mesh.vertices[:, 2])
         aligned_vertices = self.mesh.vertices[np.isclose(self.mesh.vertices[:, 2], z_min, atol=self.tolerance)]
@@ -49,6 +59,7 @@ class PoseFinder:
         if not np.all(np.isin(self.convex_hull_mesh.vertices, self.mesh.vertices)):
             raise ValueError("The convex hull mesh is not a convex hull of the original mesh. Please check the convex hull mesh and the original mesh.")
     
+    # ---------- helpers (kept INSIDE PoseFinder) ----------
     def _compute_xy_shadow(self, vertices: np.ndarray = None) -> tuple[np.ndarray, np.ndarray]:
         """
         Compute the 2D convex hull shadow (z=0) from a set of 3D vertices.
@@ -94,6 +105,57 @@ class PoseFinder:
                 angles.append(2 * np.pi - angle)
 
         return shadow_vertices, np.array(angles)
+    
+    def _load_cylinder_from_csv(self, centroid: np.ndarray | None = None) -> None:
+        """
+        Reads csv_outputs/{obj_stem}_candidate_rotations.csv.
+        Stores centered axis origin: origin - centroid, so it aligns with recentered meshes.
+        """
+        csv_path = Path("csv_outputs") / f"{self.obj_stem}_cylinder_properties.csv"
+        if not csv_path.is_file():
+            return
+        try:
+            with csv_path.open(newline="") as f:
+                for row in csv.DictReader(f):
+                    if row.get("Type", "").strip().lower() != "cylinder":
+                        continue
+                    radius = float(row["Radius"])
+                    origin = np.array([
+                        float(row["AxisOriginX"]),
+                        float(row["AxisOriginY"]),
+                        float(row["AxisOriginZ"])
+                    ], dtype=float)
+                    direction = np.array([
+                        float(row["AxisDirX"]),
+                        float(row["AxisDirY"]),
+                        float(row["AxisDirZ"])
+                    ], dtype=float)
+                    n = np.linalg.norm(direction)
+                    if n > 0:
+                        direction = direction / n
+                    if centroid is not None:
+                        origin = origin + centroid # <-- recenter origin
+                    self.cylinder_radius = radius
+                    self._cyl_axis_origin = origin
+                    self._cyl_axis_dir = direction
+                    break
+        except Exception:
+            pass
+
+    def _update_axis_pose(self, quat_xyzw: tuple[float, float, float, float]) -> tuple[np.ndarray, np.ndarray] | None:
+        """
+        Applies quaternion to the cylinder axis origin and direction (no translation).
+        Returns (rotated_origin, rotated_unit_direction); None if no cylinder present.
+        """
+        if self._cyl_axis_origin is None or self._cyl_axis_dir is None:
+            return None
+        r = R.from_quat(quat_xyzw)
+        o = r.apply(self._cyl_axis_origin)
+        d = r.apply(self._cyl_axis_dir)
+        n = np.linalg.norm(d)
+        if n > 0: d = d / n
+        return o, d
+    # ---------- end helpers ----------
 
     def find_candidate_rotations_by_resting_face_normal_alignment(self) -> tuple[list[tuple[int, int, int, tuple[float, float, float, float]]],list[np.ndarray],list[np.ndarray]]:
         """
@@ -228,7 +290,7 @@ class PoseFinder:
 
         return candidate_rotations, candidate_shadows
 
-    def find_candidate_rotations_by_face_and_shadow_alignment(self) -> tuple[list[tuple[int, int, int, tuple[float, float, float, float]]], list[np.ndarray]]:
+    def find_candidate_rotations_by_face_and_shadow_alignment(self) -> tuple[list[tuple[int, int, int, tuple[float, float, float, float]]], list[np.ndarray], list[tuple[tuple[float, float, float], tuple[float, float, float]] | None]]:
         """
         Generates combined re-orientations by first aligning each face normal to the resting face (facing -Z),
         and then rotating around Z to align a shadow edge with +Y.
@@ -240,6 +302,7 @@ class PoseFinder:
         face_rotations, base_xy_shadows, base_shadow_angles = self.find_candidate_rotations_by_resting_face_normal_alignment()
         combined_rotations = []
         combined_shadows = []
+        cylinder_axis_parameters = []
         candidate_count = 0
 
         for i, (face_id, _, _, face_quat) in enumerate(face_rotations):
@@ -260,9 +323,20 @@ class PoseFinder:
                 combined_rotations.append((candidate_count, face_id, edge_id, q_rounded_zero))
                 combined_shadows.append(shadow_variants[j])
 
+                # Per-pose cylinder axis pose (if available)
+                if self.cylinder_radius is not None:
+                    upd = self._update_axis_pose(q_rounded)
+                    if upd is None:
+                        cylinder_axis_parameters.append(None)
+                    else:
+                        o, d = upd
+                        cylinder_axis_parameters.append((tuple(o.tolist()), tuple(d.tolist())))
+                else:
+                    cylinder_axis_parameters.append(None)
+
                 candidate_count += 1
 
-        return combined_rotations, combined_shadows
+        return combined_rotations, combined_shadows, cylinder_axis_parameters
     
     def symmetry_handler(self, rotations: list[tuple[int, int, int, tuple[float,float,float]]], symmetry_tolerance: float = 0.1) -> list[tuple[int, int, int, tuple[float,float,float]]]:
         """

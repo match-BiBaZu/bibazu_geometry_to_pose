@@ -70,7 +70,7 @@ class PoseEliminator(PoseFinder):
 
         return is_inside
     
-    def remove_duplicates(self, rotations: list[tuple[int, int, int, np.ndarray]], xy_shadows) -> list[tuple[int, int, int, np.ndarray]]:
+    def remove_duplicates(self, rotations: list[tuple[int, int, int, np.ndarray]], xy_shadows, cylinder_axis_parameters) -> list[tuple[int, int, int, np.ndarray], list[np.ndarray], list[tuple[tuple[float, float, float], tuple[float, float, float]] | None]]:
         """
         Handles duplicate rotations by removing rotations that are too close to each other.
         :param rotations: List of tuples (pose, face_id, shadow_id, valid rotation vector) and list of xy_shadow arrays.
@@ -79,6 +79,7 @@ class PoseEliminator(PoseFinder):
         unique_rotations = {}
         assigned_rotations = []
         assigned_shadows = []
+        assigned_cylinder_axis_parameters = []
         pose_count = 0
 
         for index, face_id, edge_id, quat in rotations:
@@ -86,11 +87,12 @@ class PoseEliminator(PoseFinder):
                 unique_rotations[quat] = index
                 assigned_rotations.append((pose_count, face_id, edge_id, quat))
                 assigned_shadows.append(xy_shadows[index])
+                assigned_cylinder_axis_parameters.append(cylinder_axis_parameters[index])
                 pose_count += 1
         
-        return assigned_rotations, assigned_shadows
+        return assigned_rotations, assigned_shadows, assigned_cylinder_axis_parameters
     
-    def remove_unstable_poses(self, rotations: list[tuple[int, int, int, np.ndarray]], xy_shadows) -> list[tuple[int, int, int, np.ndarray], list[np.ndarray]]:
+    def remove_unstable_poses(self, rotations: list[tuple[int, int, int, np.ndarray]], xy_shadows, cylinder_axis_parameters) -> list[tuple[int, int, int, np.ndarray], list[np.ndarray], list[tuple[tuple[float, float, float], tuple[float, float, float]] | None]]:
         """
         Removes unstable poses based on the convex hull.
         :param rotations: List of tuples (pose, face_id, shadow_id, valid rotation vector).
@@ -98,6 +100,7 @@ class PoseEliminator(PoseFinder):
         """
         stable_rotations = []
         stable_shadows = []
+        stable_cylinder_axis_parameters = []
         pose_count = 0
 
         for index, face_id, edge_id, quat in rotations:
@@ -107,7 +110,8 @@ class PoseEliminator(PoseFinder):
                 #print(f"Pose {index} is stable.")
                 stable_rotations.append((pose_count, face_id, edge_id, quat))
                 stable_shadows.append(xy_shadows[index])
+                stable_cylinder_axis_parameters.append(cylinder_axis_parameters[index])
                 pose_count += 1
         
-        return stable_rotations, stable_shadows
+        return stable_rotations, stable_shadows, stable_cylinder_axis_parameters
     

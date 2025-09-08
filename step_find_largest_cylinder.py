@@ -4,10 +4,10 @@ find_largest_cylinder_step.py
 Usage:
     python find_largest_cylinder_step.py part.STEP [output.csv]
 
-- Liest STEP-Datei und findet größten Zylinder (oder Kreis).
-- Schreibt Ergebnis als CSV:
-    Erste Zeile = Kategorien
-    Zweite Zeile = Werte
+- Reads STEP file and finds largest cylinder (or circle).
+- Writes result as CSV:
+    First line = categories
+    Second line = values
 """
 
 import sys, re, math, csv, os

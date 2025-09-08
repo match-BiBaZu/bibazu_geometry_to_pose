@@ -16,9 +16,9 @@ script_dir = Path(__file__).parent
 
 workpiece_path = script_dir / 'Werkstücke_STL_grob'	
 
-workpiece_names = ['Teil_1', 'Teil_2', 'Teil_3', 'Teil_4', 'Teil_5']
+csv_path = script_dir / 'csv_outputs'
 
-#workpiece_names = ['Teil_4']
+workpiece_names = ['Teil_1', 'Teil_2', 'Teil_3', 'Teil_4', 'Teil_5']
 
 workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl4a','Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl2a','Kl4i','Qf1i','Qf2a','Qf4i','Qk1a','Qk2i','Qk4a','Ql1i','Ql2a','Ql4i','Rf1a','Rf2i','Rf4i','Rk1a','Rk2i','Rk3a','Rk4i','Rl1a','Rl2i','Rl3a','Rl4i']
 
@@ -31,7 +31,7 @@ workpiece_names =['Df1a','Df4a','Df2i']
 workpiece_names =['Rl4i','Ql4i','Qf4i','Df4a','Rk2i']
 workpiece_names =['Rl2i','Df2i','Dk4i','Dl4a','Qk4a','Rf4i','Rk4i','Rf2i','Dl2i']
 workpiece_names =['Qf2a']
-workpiece_names = rounded_workpiece_names
+#workpiece_names =rounded_workpiece_names
 
 
 # Get the workpiece name you want to find poses for
@@ -40,7 +40,7 @@ workpiece_names = rounded_workpiece_names
 for workpiece_name in workpiece_names:
 
     # Use the original STEP file to find the largest cylinder or circle edge
-    step_find_largest_cylinder(str(workpiece_path / (workpiece_name + '.STEP')), str(workpiece_path / (workpiece_name + '_cylinder_properties.csv')))
+    step_find_largest_cylinder(str(workpiece_path / (workpiece_name + '.STEP')), str(csv_path / (workpiece_name + '_cylinder_properties.csv')))
 
     # Convert the STL file to an OBJ file
     stl_to_obj_converter(str(workpiece_path / (workpiece_name + '.STL')), str(workpiece_path / (workpiece_name + '.obj')), 1, 1.0)
@@ -55,24 +55,24 @@ for workpiece_name in workpiece_names:
     pose_finder = PoseFinder(str(workpiece_path / (workpiece_name + '_convex_hull.obj')), str(workpiece_path / (workpiece_name + '.obj')), 1e-5)
 
     # Find candidate rotations based on face normals and shadow edges
-    candidate_rotations, xy_shadows = pose_finder.find_candidate_rotations_by_face_and_shadow_alignment()
+    candidate_rotations, xy_shadows, cylinder_axis_parameters = pose_finder.find_candidate_rotations_by_face_and_shadow_alignment()
 
     # Initialize the PoseEliminator with the convex hull OBJ file and self OBJ file
     pose_eliminator = PoseEliminator(str(workpiece_path / (workpiece_name + '_convex_hull.obj')), str(workpiece_path / (workpiece_name + '.obj')), 0.01)
 
     # Remove duplicate rotations (if any) from the candidate rotations
-    unique_rotations, unique_shadows = pose_eliminator.remove_duplicates(candidate_rotations, xy_shadows)
+    unique_rotations, unique_shadows, unique_axis_parameters = pose_eliminator.remove_duplicates(candidate_rotations, xy_shadows, cylinder_axis_parameters)
 
     # Remove rotations that are not stable enough by the crude centroid over resting plane detection
-    stable_rotations, stable_shadows = pose_eliminator.remove_unstable_poses(unique_rotations,unique_shadows)
+    stable_rotations, stable_shadows,stable_axis_parameters = pose_eliminator.remove_unstable_poses(unique_rotations,unique_shadows,unique_axis_parameters)
 
-    # Find unique poses by considering symmetry with an adjustable tolerance, this is set for workpieces with feature sizes between 0.1 and 0.03 cm
+    # Find unique poses by considering symmetry with an adjustable tolerance, this is set for workpieces with feature sizes between 0.1 and 0.03 cm (I still think this is programmed weirdly)
     symmetrically_unique_rotations = pose_finder.symmetry_handler(stable_rotations,1)
 
-    pose_finder.write_candidate_rotations_to_file(symmetrically_unique_rotations, str(workpiece_name + '_candidate_rotations.csv'))
+    pose_finder.write_candidate_rotations_to_file(symmetrically_unique_rotations, str(csv_path / (workpiece_name + '_candidate_rotations.csv')))
 
     # Initialize the PoseVisualizer with the original and convex hull OBJ files and valid rotations
-    pose_visualizer = PoseVisualizer(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '_convex_hull.obj')), symmetrically_unique_rotations, stable_shadows)
+    pose_visualizer = PoseVisualizer(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '_convex_hull.obj')), symmetrically_unique_rotations, stable_shadows, stable_axis_parameters)
 
     # Visualize the valid poses
     pose_visualizer.visualize_rotations(workpiece_name)
