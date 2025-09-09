@@ -9,43 +9,54 @@ import os
 
 
 class PoseVisualizer:
-    def __init__(self, original_obj_file: str = None, convex_hull_obj_file: str = None, valid_rotations: list = None, xy_shadows: list = None, cylinder_axis_params: list | None = None):
+    def __init__(self, original_obj_file: str = None, convex_hull_obj_file: str = None,
+                 valid_rotations: list = None, xy_shadows: list = None,
+                 cylinder_axis_params: list | None = None):
         """
-        Initialize the PoseVisualizer with original and convex hull OBJ files and valid rotations.
-        :param original_obj_file: Path to the original OBJ file.
-        :param convex_hull_obj_file: Path to the convex hull OBJ file.
-        :param valid_rotations: List of tuples (index, quaternion) representing valid rotations.
+        Initialize the PoseVisualizer.
+
+        cylinder_axis_params accepts:
+          1) A single list[dict]: global cylinders for all poses.
+             Each dict: {"radius": float, "origin": np.ndarray(3,), "direction": np.ndarray(3,), "entity_id": int|None}
+          2) A list[ list[dict] ] parallel to valid_rotations (same length): per-rotation cylinders.
+
+        During plotting, every cylinder axis is rotated with the pose quaternion.
         """
         if any(arg is None for arg in [original_obj_file, convex_hull_obj_file, xy_shadows]):
             raise ValueError("All inputs (original_obj_file, convex_hull_obj_file, xy_shadows) must be provided and not None.")
-        
+
         self.original_mesh = trimesh.load_mesh(original_obj_file)
         self.convex_hull_mesh = trimesh.load_mesh(convex_hull_obj_file)
         self.xy_shadows = xy_shadows
 
-        # fix normals of normal mesh to ensure they point outward
         self.original_mesh.fix_normals()
-
-        # fix normals of convex hull to ensure they point outward
         self.convex_hull_mesh.fix_normals()
 
-        # Ensure the meshes are centered around the centroid of the convex hull
         centroid = self.convex_hull_mesh.centroid
-
         self.original_mesh.apply_translation(-centroid)
         self.convex_hull_mesh.apply_translation(-centroid)
-        
-        # Store valid rotations
-        self.valid_rotations = valid_rotations
 
-        # Store cylinder axis parameters by rotation index for easy access during plotting
-        self.cylinder_axis_params = cylinder_axis_params or [None] * len(valid_rotations)
+        self.valid_rotations = valid_rotations or []
 
-        # Map rot_idx → cylinder axis ((ox,oy,oz),(dx,dy,dz)) for quick access
-        self._cyl_axis_by_rot_idx = {}
-        for (rot_tuple, cap) in zip(valid_rotations, self.cylinder_axis_params):
-            rot_idx = rot_tuple[0]  # (pose_id, face_id, edge_id, quat)
-            self._cyl_axis_by_rot_idx[rot_idx] = cap
+        # --- normalize cylinder input into: rot_idx -> list[dict] -----------------
+        self._cyl_axes_by_rot_idx = {}
+        if cylinder_axis_params is None:
+            # nothing provided
+            pass
+        else:
+            # Case A: a single list of cylinder dicts (global for all rotations)
+            is_global_list = (len(cylinder_axis_params) > 0 and isinstance(cylinder_axis_params[0], dict))
+            if is_global_list:
+                global_cyls = cylinder_axis_params
+                for rot_tuple in (valid_rotations or []):
+                    rot_idx = rot_tuple[0]  # (pose_id, face_id, edge_id, quat)
+                    self._cyl_axes_by_rot_idx[rot_idx] = list(global_cyls)  # shallow copy
+            else:
+                # Case B: per-rotation lists parallel to valid_rotations
+                for rot_tuple, cyl_list in zip((valid_rotations or []), cylinder_axis_params):
+                    rot_idx = rot_tuple[0]
+                    # accept None or [] gracefully
+                    self._cyl_axes_by_rot_idx[rot_idx] = list(cyl_list or [])
 
     def _rotate_mesh(self, mesh, quat = None):
         """
@@ -220,62 +231,80 @@ class PoseVisualizer:
             ax.text(*(origin + [0, length, 0]), 'Y', color='g', fontsize=7, va='bottom', ha='left', zorder=zorder+1)
             ax.text(*(origin + [0, 0, length]), 'Z', color='b', fontsize=7, va='bottom', ha='left', zorder=zorder+1)
 
-    def _add_cylinder_axis(self, ax, axis_params, scale=1.0, zorder=12):
+    def _add_cylinder_axis(self, ax, cylinders, scale=1.0, zorder=12):
         """
-        Draw cylinder axis as a centered segment of length = scale * max_range,
-        where max_range matches the coordinate axes sizing.
-        axis_params: ((ox,oy,oz), (dx,dy,dz)) in the *rotated* frame.
-        """
-        if axis_params is None:
-            return
-        (ox, oy, oz), (dx, dy, dz) = axis_params
-        d = np.array([dx, dy, dz], dtype=float)
-        n = np.linalg.norm(d)
-        if n == 0:
-            return
-        d = d / n
+        Draw one or many cylinder axes.
 
-        # Use current axis limits (same basis as _add_coordinate_axes)
+        cylinders can be:
+          - None
+          - a single tuple ((ox,oy,oz),(dx,dy,dz))
+          - a dict: {"origin": np.array(3), "direction": np.array(3), ...}
+          - a list of either tuples or dicts (any mix)
+
+        Segment length = scale * max_range to match coordinate axes sizing.
+        """
+        if cylinders is None:
+            return
+
+        # Normalize to a list of (origin, direction) pairs
+        def as_pair(item):
+            if item is None:
+                return None
+            if isinstance(item, dict):
+                o = np.asarray(item.get("origin"), dtype=float)
+                d = np.asarray(item.get("direction"), dtype=float)
+                return (o, d)
+            if isinstance(item, (tuple, list)) and len(item) == 2:
+                o = np.asarray(item[0], dtype=float)
+                d = np.asarray(item[1], dtype=float)
+                return (o, d)
+            return None
+
+        if not isinstance(cylinders, (list, tuple)):
+            cylinders = [cylinders]
+
+        pairs = []
+        for it in cylinders:
+            p = as_pair(it)
+            if p is not None:
+                pairs.append(p)
+        if not pairs:
+            return
+
         x0, x1 = ax.get_xlim3d()
         y0, y1 = ax.get_ylim3d()
         z0, z1 = ax.get_zlim3d()
         max_range = max(x1 - x0, y1 - y0, z1 - z0)
         length = scale * max_range
 
-        p0 = np.array([ox, oy, oz]) - 0.5 * length * d
-        p1 = np.array([ox, oy, oz]) + 0.5 * length * d
-
-        ax.plot([p0[0], p1[0]], [p0[1], p1[1]], [p0[2], p1[2]],
-                linewidth=2.0, color='m', zorder=zorder)
-        # Mark origin point of axis for clarity
-        ax.scatter([ox], [oy], [oz], color='m', s=18, zorder=zorder+1)
+        for (o, d) in pairs:
+            n = np.linalg.norm(d)
+            if n == 0:
+                continue
+            d = d / n
+            p0 = o - 0.5 * length * d
+            p1 = o + 0.5 * length * d
+            ax.plot([p0[0], p1[0]], [p0[1], p1[1]], [p0[2], p1[2]], linewidth=2.0, color='m', zorder=zorder)
+            ax.scatter([o[0]], [o[1]], [o[2]], color='m', s=18, zorder=zorder+1)
 
     def visualize_rotations(self, workpiece_name: str = None):
         """
         Visualizes all rotations grouped by face_id.
-        Subplots are laid out to fit the screen size and use maximum space.
-        Each rot_idx is only plotted once, in the first face it appears in.
+        For each pose, draws every cylinder axis (if any) after rotating origin+direction with the pose quaternion.
         """
-
         zipped = list(zip(self.valid_rotations, self.xy_shadows))
         entries = [(rot_idx, face_id, quat, shadow) for (rot_idx, face_id, edge_id, quat), shadow in zipped]
 
-        # face_id → list of (rot_idx, quat, shadow)
         face_to_entries = {}
         for rot_idx, face_id, quat, shadow in entries:
             face_to_entries.setdefault(face_id, []).append((rot_idx, quat, shadow))
 
-        # rot_idx → list of (face_id, quat, shadow)
         rot_idx_groups = {}
         for rot_idx, face_id, quat, shadow in entries:
             rot_idx_groups.setdefault(rot_idx, []).append((face_id, quat, shadow))
 
         plotted_rot_idxs = set()
-
-        # Try to get screen resolution in inches
-
-        screen_inch_w = 16  # fallback
-        screen_inch_h = 9
+        screen_inch_w, screen_inch_h = 16, 9  # fallback
 
         for face_id, entry_list in face_to_entries.items():
             rot_ids_in_face = sorted({rot_idx for rot_idx, _, _ in entry_list if rot_idx not in plotted_rot_idxs})
@@ -286,18 +315,17 @@ class PoseVisualizer:
             cols = min(n, 4)
             rows = int(np.ceil(n / cols))
 
-            # Adjust full figure size to fill screen while maintaining aspect ratio
-            subplot_w = screen_inch_w / cols
-            subplot_h = screen_inch_h / rows
-            fig_w = subplot_w * cols
-            fig_h = subplot_h * rows
-
-            fig, axes = plt.subplots(rows, cols, figsize=(fig_w, fig_h), subplot_kw={'projection': '3d'})
+            fig, axes = plt.subplots(rows, cols, figsize=(screen_inch_w, screen_inch_h),
+                                     subplot_kw={'projection': '3d'})
             axes = np.array(axes).reshape(-1) if n > 1 else [axes]
 
             for i, rot_idx in enumerate(rot_ids_in_face):
                 ax = axes[i]
                 legend_lines = [f"Pose {rot_idx}:"]
+
+                # get cylinders for this pose (list[dict] or empty)
+                cyl_list = self._cyl_axes_by_rot_idx.get(rot_idx, [])
+
                 for face_id_i, quat, shadow in rot_idx_groups[rot_idx]:
                     vertices, faces = self._rotate_mesh(self.original_mesh, quat)
                     self._plot_mesh(ax, vertices, faces, None)
@@ -307,26 +335,37 @@ class PoseVisualizer:
                     self._plot_centroid(ax, vertices, faces, title=None)
                     self._add_coordinate_axes(ax)
 
-                    # draw cylinder axis for this pose (if available)
-                    self._add_cylinder_axis(ax, self._cyl_axis_by_rot_idx.get(rot_idx), scale=0.10)
+                    # rotate cylinders into this pose
+                    if cyl_list:
+                        rot = R.from_quat(quat)
+                        rotated_cyls = []
+                        for c in cyl_list:
+                            # tolerate tuple input as well
+                            if isinstance(c, dict):
+                                o = np.asarray(c["origin"], dtype=float)
+                                d = np.asarray(c["direction"], dtype=float)
+                            else:
+                                o = np.asarray(c[0], dtype=float)
+                                d = np.asarray(c[1], dtype=float)
+                            o_r = rot.apply(o)
+                            d_r = rot.apply(d)
+                            rotated_cyls.append((o_r, d_r))
+
+                        self._add_cylinder_axis(ax, rotated_cyls, scale=0.10)
 
                     legend_lines.append(f"Resting Face {face_id_i}")
                     legend_lines.append(f"Quaternion [x,y,z,w] {np.round(quat, 4)}")
 
-                # Move text inside plot area (top-left corner, just below the box edge)
-                title_text = "\n".join(legend_lines)
-                ax.set_title(title_text, fontsize=8)  # pad in points
-                fig.subplots_adjust(hspace=0.5)    
+                ax.set_title("\n".join(legend_lines), fontsize=8)
+                fig.subplots_adjust(hspace=0.5)
                 self._add_plot_legend(ax)
                 plotted_rot_idxs.add(rot_idx)
 
-            # Hide unused axes
             for j in range(i + 1, len(axes)):
                 fig.delaxes(axes[j])
 
             fig.suptitle(f"Unique and Symmetric Resting Poses of {workpiece_name} on Face {face_id}", fontsize=14)
             plt.tight_layout(rect=[0, 0, 1, 0.95])
-            #plt.show()
             self._save_pose_figure(fig, workpiece_name, face_id)
 
 

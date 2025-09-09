@@ -1,21 +1,14 @@
-#!/usr/bin/env python3
 """
-find_largest_cylinder_step.py
-
 Usage:
-    python find_largest_cylinder_step.py /path/to/file.STEP
+    python find_largest_cylinder_step.py part.STEP [output.csv]
 
-Funktion:
-- Lädt eine STEP-Datei (AP203/AP214).
-- Sucht alle CYLINDRICAL_SURFACE und CIRCLE Entitäten.
-- Gibt den größten gefundenen Radius aus und die Achse (Ursprung + Richtung).
-
-Hinweis:
-- Werte sind in den Einheiten der STEP-Datei (meist mm).
-- Funktioniert ohne OpenCascade, nur Text-Parsing.
+- Reads STEP file and finds largest cylinder (or circle). please center the part around the geometric centroid first!
+- Writes result as CSV:
+    First line = categories
+    Second line = values
 """
 
-import sys, re, math, json
+import sys, re, math, csv, os
 
 def parse_list(s: str):
     out, buf, depth = [], "", 0
@@ -67,7 +60,7 @@ def get_axis2(entities, eid):
         "axis": get_direction(entities, axis_id) if axis_id else (0,0,1)
     }
 
-def main(stepfile):
+def step_find_all_cylinders(stepfile, outfile=None):
     text = open(stepfile,"r",errors="ignore").read()
     entity_re = re.compile(r"#(\d+)\s*=\s*([A-Z0-9_]+)\s*\((.*?)\)\s*;", re.IGNORECASE | re.DOTALL)
     entities = {}
@@ -84,29 +77,39 @@ def main(stepfile):
             radius = num_in(parts[2] if len(parts)>=3 else None)
             if radius is not None:
                 ax = get_axis2(entities, ax_id)
-                cyls.append({"eid":eid,"radius":radius,"axis_origin":ax["origin"],"axis_dir":ax["axis"]})
+                cyls.append({
+                    "Type":"cylinder","EntityID":eid,"Radius":radius,
+                    "AxisOriginX":ax["origin"][0],"AxisOriginY":ax["origin"][1],"AxisOriginZ":ax["origin"][2],
+                    "AxisDirX":ax["axis"][0],"AxisDirY":ax["axis"][1],"AxisDirZ":ax["axis"][2]
+                })
         elif etype == "CIRCLE":
             parts = parse_list(args)
             ax_id = int(parts[1][1:]) if len(parts)>=2 and parts[1].startswith("#") else None
             radius = num_in(parts[2] if len(parts)>=3 else None)
             if radius is not None:
                 ax = get_axis2(entities, ax_id)
-                circles.append({"eid":eid,"radius":radius,"center":ax["origin"],"normal":ax["axis"]})
+                circles.append({
+                    "Type":"circle_edge","EntityID":eid,"Radius":radius,
+                    "AxisOriginX":ax["origin"][0],"AxisOriginY":ax["origin"][1],"AxisOriginZ":ax["origin"][2],
+                    "AxisDirX":ax["axis"][0],"AxisDirY":ax["axis"][1],"AxisDirZ":ax["axis"][2]
+                })
 
-    result = {}
-    if cyls:
-        largest = max(cyls, key=lambda c: c["radius"])
-        result = {"type":"cylinder", **largest}
-    elif circles:
-        largest = max(circles, key=lambda c: c["radius"])
-        result = {"type":"circle_edge", **largest}
-    else:
-        result = {"type":"none"}
+    rows = sorted(cyls, key=lambda r: r["Radius"], reverse=True)
+    if not rows:
+        rows = sorted(circles, key=lambda r: r["Radius"], reverse=True)
+    if not rows:
+        rows = [{"Type":"none"}]
 
-    print(json.dumps({"status":"ok","result":result}, indent=2))
+    if not outfile:
+        base = os.path.splitext(stepfile)[0]
+        outfile = f"{base}_cylinders.csv"
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python find_largest_cylinder_step.py part.STEP", file=sys.stderr)
-        sys.exit(1)
-    main(sys.argv[1])
+    # unify fieldnames across cases
+    fieldnames = ["Type","EntityID","Radius","AxisOriginX","AxisOriginY","AxisOriginZ","AxisDirX","AxisDirY","AxisDirZ"]
+    with open(outfile,"w",newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({k: r.get(k, "") for k in fieldnames})
+
+    print(f"Result saved in: {outfile}")

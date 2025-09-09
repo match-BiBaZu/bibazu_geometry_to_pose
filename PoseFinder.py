@@ -7,7 +7,7 @@ import csv
 from scipy.spatial import cKDTree
 
 class PoseFinder:
-    def __init__(self, convex_hull_obj_file: str, obj_file: str, tolerance: float = 1e-5):
+    def __init__(self, convex_hull_obj_file: str, obj_file: str, tolerance: float = 1e-5, is_workpiece_centered: bool = 0):
         """
         Initialize the PoseFinder with the convex hull OBJ file.
         :param convex_hull_obj_file: Path to the convex hull OBJ file.
@@ -25,9 +25,9 @@ class PoseFinder:
         self.convex_hull_mesh = trimesh.load_mesh(convex_hull_obj_file)
 
         # Cylinder data (from CSV); None if not present
-        self.cylinder_radius: float | None = None
-        self._cyl_axis_origin: np.ndarray | None = None  # world before rotation (model frame)
-        self._cyl_axis_dir: np.ndarray | None = None     # unit vector
+        self.cylinder_radius: list[float] | None = None
+        self.cyl_axis_origin: list[np.ndarray] | None = None  # world before rotation (model frame)
+        self.cyl_axis_dir: list[np.ndarray] | None = None     # unit vector
 
         # Check to ensure that the mesh and convex hull meshes are not empty
         if self.mesh.vertices is None or len(self.mesh.vertices) == 0:
@@ -42,13 +42,17 @@ class PoseFinder:
         # fix normals of convex hull to ensure they point outward
         self.convex_hull_mesh.fix_normals()
 
-        # Ensure the mesh is centered around the centroid of the convex hull
         centroid = self.convex_hull_mesh.centroid
 
         self.convex_hull_mesh.apply_translation(-centroid)
         self.mesh.apply_translation(-centroid)
 
-        self._load_cylinder_from_csv(-centroid)
+        # Ensure the mesh is centered around the centroid of the convex hull if not centered in input file
+        if is_workpiece_centered == 0:
+            self._load_cylinder_from_csv(centroid)
+        else:
+            self._load_cylinder_from_csv(np.array([0,0,0], dtype=float))
+
         # Check if at least 3 vertices align with the lowest z-axis (resting face)
         z_min = np.min(self.mesh.vertices[:, 2])
         aligned_vertices = self.mesh.vertices[np.isclose(self.mesh.vertices[:, 2], z_min, atol=self.tolerance)]
@@ -105,53 +109,79 @@ class PoseFinder:
                 angles.append(2 * np.pi - angle)
 
         return shadow_vertices, np.array(angles)
-    
-    def _load_cylinder_from_csv(self, centroid: np.ndarray | None = None) -> None:
+
+    def _load_cylinder_from_csv(self, centroid: np.ndarray | None = None) -> int:
         """
-        Reads csv_outputs/{obj_stem}_candidate_rotations.csv.
-        Stores centered axis origin: origin - centroid, so it aligns with recentered meshes.
+        Reads cylinder rows from:
+        - csv_outputs/{obj_stem}_cylinder_properties.csv (legacy)
+        Exports all cylinders into parallel lists:
+        self.cylinder_radius: list[float]
+        self.cyl_axis_origin: list[np.ndarray(3,)]
+        self.cyl_axis_dir:    list[np.ndarray(3,)]
+        Returns number of cylinders loaded.
         """
-        csv_path = Path("csv_outputs") / f"{self.obj_stem}_cylinder_properties.csv"
+        csv_dir = Path("csv_outputs")
+        csv_path = csv_dir / f"{self.obj_stem}_cylinder_properties.csv"
         if not csv_path.is_file():
-            return
+            return 0
+
+        # initialize destination lists
+        self.cylinder_radius = []
+        self.cyl_axis_origin = []
+        self.cyl_axis_dir = []
+
+        appended = 0
         try:
             with csv_path.open(newline="") as f:
-                for row in csv.DictReader(f):
+                reader = csv.DictReader(f)
+                for row in reader:
                     if row.get("Type", "").strip().lower() != "cylinder":
                         continue
-                    radius = float(row["Radius"])
+
+                    def ffloat(key, default=0.0):
+                        try:
+                            return float(row.get(key, default))
+                        except Exception:
+                            return float(default)
+
+                    radius = ffloat("Radius")
                     origin = np.array([
-                        float(row["AxisOriginX"]),
-                        float(row["AxisOriginY"]),
-                        float(row["AxisOriginZ"])
+                        ffloat("AxisOriginX"), ffloat("AxisOriginY"), ffloat("AxisOriginZ")
                     ], dtype=float)
+
                     direction = np.array([
-                        float(row["AxisDirX"]),
-                        float(row["AxisDirY"]),
-                        float(row["AxisDirZ"])
+                        ffloat("AxisDirX", 0.0), ffloat("AxisDirY", 0.0), ffloat("AxisDirZ", 1.0)
                     ], dtype=float)
+
                     n = np.linalg.norm(direction)
                     if n > 0:
                         direction = direction / n
+
                     if centroid is not None:
-                        origin = origin + centroid # <-- recenter origin
-                    self.cylinder_radius = radius
-                    self._cyl_axis_origin = origin
-                    self._cyl_axis_dir = direction
-                    break
+                        origin = origin - centroid
+
+                    self.cylinder_radius.append(radius)
+                    self.cyl_axis_origin.append(origin)
+                    self.cyl_axis_dir.append(direction)
+
+                    appended += 1
+
         except Exception:
-            pass
+            return appended
+
+        return appended
+
 
     def _update_axis_pose(self, quat_xyzw: tuple[float, float, float, float]) -> tuple[np.ndarray, np.ndarray] | None:
         """
         Applies quaternion to the cylinder axis origin and direction (no translation).
         Returns (rotated_origin, rotated_unit_direction); None if no cylinder present.
         """
-        if self._cyl_axis_origin is None or self._cyl_axis_dir is None:
+        if self.cyl_axis_origin is None or self.cyl_axis_dir is None:
             return None
         r = R.from_quat(quat_xyzw)
-        o = r.apply(self._cyl_axis_origin)
-        d = r.apply(self._cyl_axis_dir)
+        o = r.apply(self.cyl_axis_origin)
+        d = r.apply(self.cyl_axis_dir)
         n = np.linalg.norm(d)
         if n > 0: d = d / n
         return o, d
@@ -290,53 +320,65 @@ class PoseFinder:
 
         return candidate_rotations, candidate_shadows
 
-    def find_candidate_rotations_by_face_and_shadow_alignment(self) -> tuple[list[tuple[int, int, int, tuple[float, float, float, float]]], list[np.ndarray], list[tuple[tuple[float, float, float], tuple[float, float, float]] | None]]:
+    def find_candidate_rotations_by_face_and_shadow_alignment(self) -> tuple[
+        list[tuple[int, int, int, tuple[float, float, float, float]]],
+        list[np.ndarray],
+        list[list[tuple[tuple[float, float, float], tuple[float, float, float]]]]  # per-pose list of axes
+    ]:
         """
-        Generates combined re-orientations by first aligning each face normal to the resting face (facing -Z),
-        and then rotating around Z to align a shadow edge with +Y.
+        Generates combined re-orientations and per-candidate cylinder-axis lists.
 
         Returns:
-            candidate_rotations: List of (index, quaternion [x, y, z, w])
-            candidate_shadows: List of (N, 3) arrays of rotated 2D shadow vertices in XY plane (z=0)
+            combined_rotations: [(idx, face_id, edge_id, quat[x,y,z,w])]
+            combined_shadows:   [np.ndarray (N,3) on z=0]
+            cylinder_axis_params: per-candidate list of axes:
+                [[((ox,oy,oz),(dx,dy,dz)), ...],  # candidate 0
+                [ ... ],                         # candidate 1
+                ...]
+            (axes are *not* pre-rotated; PoseVisualizer will rotate them)
         """
-        face_rotations, base_xy_shadows, base_shadow_angles = self.find_candidate_rotations_by_resting_face_normal_alignment()
-        combined_rotations = []
-        combined_shadows = []
-        cylinder_axis_parameters = []
+        face_rotations, base_xy_shadows, base_shadow_angles = \
+            self.find_candidate_rotations_by_resting_face_normal_alignment()
+
+        combined_rotations: list[tuple[int,int,int,tuple[float,float,float,float]]] = []
+        combined_shadows:   list[np.ndarray] = []
+        cylinder_axis_params: list[list[tuple[tuple[float,float,float],tuple[float,float,float]]]] = []
+
         candidate_count = 0
 
-        for i, (face_id, _, _, face_quat) in enumerate(face_rotations):
+        # Prepare global (unrotated) cylinder axes once
+        # Assumes you filled these via your CSV loader (parallel lists)
+        if getattr(self, "cyl_axis_origin", None) is not None and getattr(self, "cyl_axis_dir", None) is not None:
+            global_axes = [
+                (tuple(np.asarray(o, float).tolist()),
+                tuple((np.asarray(d, float) / (np.linalg.norm(d) or 1.0)).tolist()))
+                for o, d in zip(self.cyl_axis_origin, self.cyl_axis_dir)
+            ]
+        else:
+            global_axes = []
 
-            # Compute shadow-alignment rotations from this configuration
-            shadow_rotations, shadow_variants = self.find_candidate_rotations_by_shadow_edge_alignment(base_xy_shadows[i], base_shadow_angles[i])
+        for i, (face_id, _, _, face_quat) in enumerate(face_rotations):
+            shadow_rotations, shadow_variants = self.find_candidate_rotations_by_shadow_edge_alignment(
+                base_xy_shadows[i], base_shadow_angles[i]
+            )
 
             for j, (edge_id, _, _, shadow_quat) in enumerate(shadow_rotations):
-                # Compose total rotation: shadow_quat * face_quat
-                q_total = R.from_quat(shadow_quat) * R.from_quat(face_quat)
-                q_total = q_total.as_quat()  # Final rotation quaternion
-                #print(f"Combined rotation:{q_total}\nshadow:{shadow_quat}\nface:{face_quat}\nface_id:{face_id}edge_id:{edge_id}")
+                q_total = (R.from_quat(shadow_quat) * R.from_quat(face_quat)).as_quat()
 
-                # Do some cleaning
-                q_rounded = tuple(np.round(q_total, decimals=int(np.log10(1/self.tolerance))))  # Round to prevent numerical noise
-                q_rounded_zero = tuple(0.0 if abs(x) < self.tolerance else x for x in q_rounded)  # Ensure all zeros are positive
+                # cleanup & indexing
+                q_rounded = tuple(np.round(q_total, decimals=int(np.log10(1/self.tolerance))))
+                q_rounded_zero = tuple(0.0 if abs(x) < self.tolerance else x for x in q_rounded)
 
                 combined_rotations.append((candidate_count, face_id, edge_id, q_rounded_zero))
                 combined_shadows.append(shadow_variants[j])
 
-                # Per-pose cylinder axis pose (if available)
-                if self.cylinder_radius is not None:
-                    upd = self._update_axis_pose(q_rounded)
-                    if upd is None:
-                        cylinder_axis_parameters.append(None)
-                    else:
-                        o, d = upd
-                        cylinder_axis_parameters.append((tuple(o.tolist()), tuple(d.tolist())))
-                else:
-                    cylinder_axis_parameters.append(None)
+                # Per-candidate axes: just hand over the full (unrotated) global set.
+                # PoseVisualizer will rotate each axis for the candidate’s quaternion.
+                cylinder_axis_params.append(list(global_axes))  # shallow copy keeps per-candidate independence
 
                 candidate_count += 1
 
-        return combined_rotations, combined_shadows, cylinder_axis_parameters
+        return combined_rotations, combined_shadows, cylinder_axis_params
     
     def symmetry_handler(self, rotations: list[tuple[int, int, int, tuple[float,float,float]]], symmetry_tolerance: float = 0.1) -> list[tuple[int, int, int, tuple[float,float,float]]]:
         """

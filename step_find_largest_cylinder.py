@@ -4,7 +4,7 @@ find_largest_cylinder_step.py
 Usage:
     python find_largest_cylinder_step.py part.STEP [output.csv]
 
-- Reads STEP file and finds largest cylinder (or circle).
+- Reads STEP file and finds largest cylinder (or circle). please center the part around the geometric centroid first!
 - Writes result as CSV:
     First line = categories
     Second line = values
