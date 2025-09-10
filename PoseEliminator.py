@@ -136,6 +136,7 @@ class PoseEliminator(PoseFinder):
         # --- helpers ---
         def _line_dist_perp(p, o, d_hat):
             # || (p - o) x d̂ ||, with d̂ unit
+            #print(f'_line distance={np.linalg.norm(np.cross(p - o, d_hat))}')
             return np.linalg.norm(np.cross(p - o, d_hat))
 
         def _extract_axes_with_radius(per_pose_axes):
@@ -178,10 +179,14 @@ class PoseEliminator(PoseFinder):
                 band = max(abs_tol, rel_tol * abs(r))
                 close = 0
                 for p in verts:
+                    #print(f'radius check: |dist_perp({p}, {o}, {d_hat}) - {r}| <= {band}?')
                     if abs(_line_dist_perp(p, o, d_hat) - r) <= band:
+                        print(f'abs(_line_dist_perp(p, o, d_hat) - r) = {abs(_line_dist_perp(p, o, d_hat) - r)} <= {band}')
                         close += 1
                         if close >= 2:
                             return (o, d_hat, r)
+                    #else:
+                        #print(f'abs(_line_dist_perp(p, o, d_hat) - r) = {abs(_line_dist_perp(p, o, d_hat) - r)} > {band}')
             return None
 
         def _twist_delta_deg_about_axis(q_prev, q_curr, d_hat):
@@ -229,7 +234,7 @@ class PoseEliminator(PoseFinder):
             #print(f'sum_deg={sum_deg}, mode={mode}, tracked_axis={tracked_axis}')
             # rotate mesh
             rot = R.from_quat(quat); T = np.eye(4); T[:3, :3] = rot.as_matrix()
-            rot_mesh = self.mesh.copy(); rot_mesh.apply_transform(T)
+            rot_mesh = self.convex_hull_mesh.copy(); rot_mesh.apply_transform(T)
 
             rest_base, rest_back = _resting_sets(rot_mesh)
             axes_with_r = _extract_axes_with_radius(cylinder_axis_parameters[old_id])  # already pose-rotated
@@ -239,6 +244,13 @@ class PoseEliminator(PoseFinder):
             match_back = _pick_cyl_match(rest_back, axes_with_r)
 
             if match_base is None and match_back is None:
+                print(f'pose id when no cylinder detected: {pose_id}')
+                # Keep non-cylindrical pose
+                kept_rot.append((pose_id, face_id, edge_id, quat))
+                kept_shad.append(xy_shadows[old_id])
+                kept_axes.append(cylinder_axis_parameters[old_id])  # or [] if you prefer none
+                pose_id += 1
+
                 # reset if no cylindrical resting detected
                 mode = None; sum_deg = 0.0; prev_quat = None; tracked_axis = None
                 continue
@@ -249,6 +261,7 @@ class PoseEliminator(PoseFinder):
 
             # reset sequence if switching side or cylinder axis
             if (mode != new_mode) or (tracked_axis is None or np.linalg.norm(tracked_axis[1] - new_axis[1]) > 1e-6):
+                print(f'resetting cylinder sequence at pose {old_id} due to mode/axis change: {mode} -> {new_mode}, {tracked_axis} -> {new_axis}')
                 mode = new_mode
                 sum_deg = 0.0
                 prev_quat = quat

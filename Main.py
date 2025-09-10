@@ -32,7 +32,7 @@ rounded_workpiece_names = ['Dk2a','Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1
 #workpiece_names =['Rl4i','Ql4i','Qf4i','Df4a','Rk2i']
 #workpiece_names =['Rl2i','Df2i','Dk4i','Dl4a','Qk4a','Rf4i','Rk4i','Rf2i','Dl2i']
 #workpiece_names =['Qf2a']
-workpiece_names = ['Qf4i']
+workpiece_names = ['Kf1i']
 
 # check if step file is centered or not, if the first letter of the workpiece name is 'k' or 'K' it is centered as it is a circle based part
 is_step_file_centered = 0
@@ -47,7 +47,7 @@ for workpiece_name in workpiece_names:
     is_step_file_centered = 1 if workpiece_name[0].lower() == 'k' else 0
 
     # Use the original STEP file to find the largest cylinder or circle edge
-    step_find_largest_cylinder(str(workpiece_path / (workpiece_name + '.STEP')), str(csv_path / (workpiece_name + '_cylinder_properties.csv')))
+    step_find_all_cylinders(str(workpiece_path / (workpiece_name + '.STEP')), str(csv_path / (workpiece_name + '_cylinder_properties.csv')))
 
     # Convert the STL file to an OBJ file
     stl_to_obj_converter(str(workpiece_path / (workpiece_name + '.STL')), str(workpiece_path / (workpiece_name + '.obj')), 1, 1.0)
