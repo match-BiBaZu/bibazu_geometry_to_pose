@@ -336,9 +336,12 @@ class PoseVisualizer:
                     self._add_coordinate_axes(ax)
 
                     # rotate cylinders into this pose
+                    #if cyl_list:
+                    #    self._add_cylinder_axis(ax, cyl_list, scale=0.10)
                     if cyl_list:
                         rot = R.from_quat(quat)
                         rotated_cyls = []
+                        unrotated_cyls = []
                         for c in cyl_list:
                             # tolerate tuple input as well
                             if isinstance(c, dict):
@@ -350,8 +353,9 @@ class PoseVisualizer:
                             o_r = rot.apply(o)
                             d_r = rot.apply(d)
                             rotated_cyls.append((o_r, d_r))
+                            unrotated_cyls.append((o, d))
 
-                        self._add_cylinder_axis(ax, rotated_cyls, scale=0.10)
+                        self._add_cylinder_axis(ax, unrotated_cyls, scale=0.10)
 
                     legend_lines.append(f"Resting Face {face_id_i}")
                     legend_lines.append(f"Quaternion [x,y,z,w] {np.round(quat, 4)}")

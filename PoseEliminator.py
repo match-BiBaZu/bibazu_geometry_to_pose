@@ -134,6 +134,65 @@ class PoseEliminator(PoseFinder):
             return [], [], []
 
         # --- helpers ---
+        def _sort_by_axis_orientation(
+            rotations: list[tuple[int,int,int,np.ndarray]],
+            shadows: list[np.ndarray],
+            cyl_params: list[list[object]],
+            tol_dir: float = 1e-3,
+            tol_pos: float = 0.0,  # kept for signature compatibility
+        ) -> tuple[
+            list[tuple[int,int,int,np.ndarray]],
+            list[np.ndarray],
+            list[list[object]]
+        ]:
+            """
+            Groups poses into sub-lists based solely on cylindrical axis ORIENTATION.
+            +d and -d are treated as *different* directions.
+            Two poses are grouped if ||d1 - d2|| < tol_dir.
+            Shadows and cyl_params are reordered to match.
+            """
+            groups = []  # each: (ref_dir_unit, [indices])
+            norm = np.linalg.norm
+
+            for idx, axis_list in enumerate(cyl_params):
+                if not axis_list:  # poses without cylinder axes → separate group
+                    groups.append((None, [idx]))
+                    continue
+
+                # get first cylinder’s direction and normalize
+                first_axis = axis_list[0]
+                if isinstance(first_axis, dict):
+                    direction = np.asarray(first_axis["direction"], float)
+                else:
+                    # ((origin),(direction)) or ((origin),(direction),radius)
+                    direction = np.asarray(first_axis[1], float)
+
+                d_norm = norm(direction)
+                if d_norm > 0:
+                    direction = direction / d_norm
+
+                # match only if directions are nearly identical (sign matters)
+                placed = False
+                for gi, (g_dir, idxs) in enumerate(groups):
+                    if g_dir is None:
+                        continue
+                    if norm(direction - g_dir) < tol_dir:
+                        idxs.append(idx)
+                        placed = True
+                        break
+
+                if not placed:
+                    groups.append((direction, [idx]))
+
+            # flatten and reorder
+            new_order = [i for (_, idxs) in groups for i in idxs]
+
+            sorted_rotations = [rotations[i] for i in new_order]
+            sorted_shadows   = [shadows[i]  for i in new_order]
+            sorted_params    = [cyl_params[i] for i in new_order]
+
+            return sorted_rotations, sorted_shadows, sorted_params
+        
         def _line_dist_perp(p, o, d_hat):
             # || (p - o) x d̂ ||, with d̂ unit
             #print(f'_line distance={np.linalg.norm(np.cross(p - o, d_hat))}')
@@ -229,7 +288,9 @@ class PoseEliminator(PoseFinder):
         kept_rot, kept_shad, kept_axes = [], [], []
         pose_id = 0
 
-        for idx, (old_id, face_id, edge_id, quat) in enumerate(rotations):
+        sorted_rotations, sorted_shadows, sorted_parameters = _sort_by_axis_orientation(rotations, xy_shadows, cylinder_axis_parameters,tol_dir=1e-3, tol_pos=1e-3)
+
+        for idx, (old_id, face_id, edge_id, quat) in enumerate(sorted_rotations):
             #print(f"Discretizing pose {old_id} ({idx+1}/{len(rotations)})...")
             #print(f'sum_deg={sum_deg}, mode={mode}, tracked_axis={tracked_axis}')
             # rotate mesh
@@ -247,8 +308,8 @@ class PoseEliminator(PoseFinder):
                 print(f'pose id when no cylinder detected: {pose_id}')
                 # Keep non-cylindrical pose
                 kept_rot.append((pose_id, face_id, edge_id, quat))
-                kept_shad.append(xy_shadows[old_id])
-                kept_axes.append(cylinder_axis_parameters[old_id])  # or [] if you prefer none
+                kept_shad.append(sorted_shadows[old_id])
+                kept_axes.append(sorted_parameters[old_id])  # or [] if you prefer none
                 pose_id += 1
 
                 # reset if no cylindrical resting detected
@@ -270,8 +331,8 @@ class PoseEliminator(PoseFinder):
                 if _aligned(0.0, step_deg, tol_deg):
                     print(f"Keeping pose {old_id}, pose id {pose_id} at 0.0° about {mode} axis")
                     kept_rot.append((pose_id, face_id, edge_id, quat))
-                    kept_shad.append(xy_shadows[old_id])
-                    kept_axes.append(cylinder_axis_parameters[old_id])
+                    kept_shad.append(sorted_shadows[old_id])
+                    kept_axes.append(sorted_parameters[old_id])
                     pose_id += 1
                 continue
 
@@ -284,9 +345,10 @@ class PoseEliminator(PoseFinder):
             if _aligned(sum_deg, step_deg, tol_deg):
                 print(f"Keeping pose {old_id}, pose id {pose_id} at {sum_deg:.1f}° about {mode} axis")
                 kept_rot.append((pose_id, face_id, edge_id, quat))
-                kept_shad.append(xy_shadows[old_id])
-                kept_axes.append(cylinder_axis_parameters[old_id])
+                kept_shad.append(sorted_shadows[old_id])
+                kept_axes.append(sorted_parameters[old_id])
                 pose_id += 1
 
-        return kept_rot, kept_shad, kept_axes
+        #return kept_rot, kept_shad, kept_axes
+        return sorted_rotations, sorted_shadows, sorted_parameters
     

@@ -79,10 +79,10 @@ for workpiece_name in workpiece_names:
     # Find unique poses by considering symmetry with an adjustable tolerance, this is set for workpieces with feature sizes between 0.1 and 0.03 cm (I still think this is programmed weirdly)
     #symmetrically_unique_rotations = pose_finder.symmetry_handler(stable_rotations,2)
 
-    pose_finder.write_candidate_rotations_to_file(unique_rotations, str(csv_path / (workpiece_name + '_candidate_rotations.csv')))
+    pose_finder.write_candidate_rotations_to_file(discretized_rotations, str(csv_path / (workpiece_name + '_candidate_rotations.csv')))
 
     # Initialize the PoseVisualizer with the original and convex hull OBJ files and valid rotations
-    pose_visualizer = PoseVisualizer(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '_convex_hull.obj')), discretized_rotations, discretized_shadows, discretized_axis_parameters)
+    pose_visualizer = PoseVisualizer(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '_convex_hull.obj')),discretized_rotations, discretized_shadows, discretized_axis_parameters)
 
     # Visualize the valid poses
     pose_visualizer.visualize_rotations(workpiece_name)
