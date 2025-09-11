@@ -298,7 +298,7 @@ class PoseEliminator(PoseFinder):
             rot_mesh = self.convex_hull_mesh.copy(); rot_mesh.apply_transform(T)
 
             rest_base, rest_back = _resting_sets(rot_mesh)
-            axes_with_r = _extract_axes_with_radius(cylinder_axis_parameters[old_id])  # already pose-rotated
+            axes_with_r = _extract_axes_with_radius(cylinder_axis_parameters[idx])  # already pose-rotated
 
             # --- 1) radius/membership check FIRST ---
             match_base = _pick_cyl_match(rest_base, axes_with_r)
@@ -308,8 +308,8 @@ class PoseEliminator(PoseFinder):
                 print(f'pose id when no cylinder detected: {pose_id}')
                 # Keep non-cylindrical pose
                 kept_rot.append((pose_id, face_id, edge_id, quat))
-                kept_shad.append(sorted_shadows[old_id])
-                kept_axes.append(sorted_parameters[old_id])  # or [] if you prefer none
+                kept_shad.append(sorted_shadows[idx])
+                kept_axes.append(sorted_parameters[idx])  # or [] if you prefer none
                 pose_id += 1
 
                 # reset if no cylindrical resting detected
@@ -331,8 +331,8 @@ class PoseEliminator(PoseFinder):
                 if _aligned(0.0, step_deg, tol_deg):
                     print(f"Keeping pose {old_id}, pose id {pose_id} at 0.0° about {mode} axis")
                     kept_rot.append((pose_id, face_id, edge_id, quat))
-                    kept_shad.append(sorted_shadows[old_id])
-                    kept_axes.append(sorted_parameters[old_id])
+                    kept_shad.append(sorted_shadows[idx])
+                    kept_axes.append(sorted_parameters[idx])
                     pose_id += 1
                 continue
 
@@ -343,12 +343,12 @@ class PoseEliminator(PoseFinder):
             prev_quat = quat
 
             if _aligned(sum_deg, step_deg, tol_deg):
-                print(f"Keeping pose {old_id}, pose id {pose_id} at {sum_deg:.1f}° about {mode} axis")
+                print(f"Keeping pose {pose_id}, pose id {pose_id} at {sum_deg:.1f}° about {mode} axis")
                 kept_rot.append((pose_id, face_id, edge_id, quat))
-                kept_shad.append(sorted_shadows[old_id])
-                kept_axes.append(sorted_parameters[old_id])
+                kept_shad.append(sorted_shadows[idx])
+                kept_axes.append(sorted_parameters[idx])
                 pose_id += 1
 
-        #return kept_rot, kept_shad, kept_axes
-        return sorted_rotations, sorted_shadows, sorted_parameters
+        return kept_rot, kept_shad, kept_axes
+        #return sorted_rotations, sorted_shadows, sorted_parameters
     
