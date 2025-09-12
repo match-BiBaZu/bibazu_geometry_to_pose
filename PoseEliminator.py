@@ -128,80 +128,47 @@ class PoseEliminator(PoseFinder):
         self,
         rotations,                 # list[(old_id, face_id, edge_id, quat[x,y,z,w])]
         xy_shadows,                # list[np.ndarray]
-        cylinder_axis_parameters,  # list[ list[ (origin, direction [, radius]) | dict ] ]  (already rotated per pose)
+        cylinder_axis_parameters,  # list[ list[(origin, direction[, radius]) | dict] ]  (already rotated per pose)
     ):
         if not rotations:
             return [], [], []
 
-        # --- helpers ---
-        def _sort_by_axis_orientation(
-            rotations: list[tuple[int,int,int,np.ndarray]],
-            shadows: list[np.ndarray],
-            cyl_params: list[list[object]],
-            tol_dir: float = 1e-3,
-            tol_pos: float = 0.0,  # kept for signature compatibility
-        ) -> tuple[
-            list[tuple[int,int,int,np.ndarray]],
-            list[np.ndarray],
-            list[list[object]]
-        ]:
+        # ---------- helpers ----------
+        def _group_indices_by_axis_direction(cyl_params, tol_dir=1e-3):
             """
-            Groups poses into sub-lists based solely on cylindrical axis ORIENTATION.
-            +d and -d are treated as *different* directions.
-            Two poses are grouped if ||d1 - d2|| < tol_dir.
-            Shadows and cyl_params are reordered to match.
+            Return groups (list[list[int]]) of pose indices sharing the FIRST cylinder direction.
+            Sign-sensitive: +d and -d are DIFFERENT. Poses with no axes become singleton groups.
             """
-            groups = []  # each: (ref_dir_unit, [indices])
+            groups = []  # list of (ref_dir_unit or None, [indices])
             norm = np.linalg.norm
-
-            for idx, axis_list in enumerate(cyl_params):
-                if not axis_list:  # poses without cylinder axes → separate group
-                    groups.append((None, [idx]))
-                    continue
-
-                # get first cylinder’s direction and normalize
-                first_axis = axis_list[0]
-                if isinstance(first_axis, dict):
-                    direction = np.asarray(first_axis["direction"], float)
-                else:
-                    # ((origin),(direction)) or ((origin),(direction),radius)
-                    direction = np.asarray(first_axis[1], float)
-
-                d_norm = norm(direction)
-                if d_norm > 0:
-                    direction = direction / d_norm
-
-                # match only if directions are nearly identical (sign matters)
+            for idx, axes in enumerate(cyl_params):
+                if not axes:
+                    groups.append((None, [idx])); continue
+                first = axes[0]
+                d = (np.asarray(first["direction"], float)
+                    if isinstance(first, dict) else np.asarray(first[1], float))
+                nd = norm(d)
+                if nd == 0:
+                    groups.append((None, [idx])); continue
+                d = d / nd
                 placed = False
-                for gi, (g_dir, idxs) in enumerate(groups):
-                    if g_dir is None:
+                for gdir, idxs in groups:
+                    if gdir is None:
                         continue
-                    if norm(direction - g_dir) < tol_dir:
-                        idxs.append(idx)
-                        placed = True
-                        break
-
+                    if norm(d - gdir) < tol_dir:  # sign-sensitive
+                        idxs.append(idx); placed = True; break
                 if not placed:
-                    groups.append((direction, [idx]))
+                    groups.append((d, [idx]))
+            return [idxs for (gdir, idxs) in groups], [gdir for (gdir, idxs) in groups]
 
-            # flatten and reorder
-            new_order = [i for (_, idxs) in groups for i in idxs]
-
-            sorted_rotations = [rotations[i] for i in new_order]
-            sorted_shadows   = [shadows[i]  for i in new_order]
-            sorted_params    = [cyl_params[i] for i in new_order]
-
-            return sorted_rotations, sorted_shadows, sorted_params
-        
         def _line_dist_perp(p, o, d_hat):
-            # || (p - o) x d̂ ||, with d̂ unit
-            #print(f'_line distance={np.linalg.norm(np.cross(p - o, d_hat))}')
+            # ⟂ distance from point to axis line (o,d̂): ||(p-o)×d̂||
             return np.linalg.norm(np.cross(p - o, d_hat))
 
         def _extract_axes_with_radius(per_pose_axes):
-            """Return list[(o, d_hat, r>0)]. Accept dict or tuple forms. Normalize d."""
+            """Return list[(o, d̂, r>0)] from dicts/tuples; normalize d."""
             out = []
-            fallback_r = getattr(self, "cylinder_radius", None)  # optional parallel radii
+            fallback_r = getattr(self, "cylinder_radius", None)
             for k, item in enumerate(per_pose_axes or []):
                 if isinstance(item, dict):
                     o = np.asarray(item["origin"], float)
@@ -209,7 +176,6 @@ class PoseEliminator(PoseFinder):
                     r = float(item.get("radius",
                                     (fallback_r[k] if isinstance(fallback_r, (list, tuple)) and k < len(fallback_r) else 0.0)))
                 else:
-                    # ((o),(d)) or ((o),(d),r)
                     o = np.asarray(item[0], float)
                     d = np.asarray(item[1], float)
                     r = float(item[2]) if len(item) >= 3 else (
@@ -228,127 +194,140 @@ class PoseEliminator(PoseFinder):
             idx_x = np.where(np.abs(x - min_x) < self.tolerance)[0]
             return V[idx_z], V[idx_x]
 
-        def _pick_cyl_match(verts, axes_with_r):
-            """Return (o, d_hat, r) of first axis with ≥2 verts at radius, else None."""
+        def _best_axis_match_for_group(verts, axes_with_r, n_ref_hat):
+            """
+            Among axes_with_r, pick the one whose direction is closest to n_ref_hat
+            that also has ≥2 verts near radius. Return (o, d̂, r) or None.
+            """
             if verts.shape[0] < 2 or not axes_with_r:
                 return None
-            abs_tol = float(self.tolerance)         # length units
-            rel_tol = 1e-3                          # 0.1% radius band
+            abs_tol = float(self.tolerance)  # length units
+            rel_tol = 1e-3                   # 0.1% of radius
+            best = None
+            best_dir_err = np.inf
             for (o, d_hat, r) in axes_with_r:
                 band = max(abs_tol, rel_tol * abs(r))
+                # check membership
                 close = 0
                 for p in verts:
-                    #print(f'radius check: |dist_perp({p}, {o}, {d_hat}) - {r}| <= {band}?')
                     if abs(_line_dist_perp(p, o, d_hat) - r) <= band:
-                        print(f'abs(_line_dist_perp(p, o, d_hat) - r) = {abs(_line_dist_perp(p, o, d_hat) - r)} <= {band}')
                         close += 1
                         if close >= 2:
-                            return (o, d_hat, r)
-                    #else:
-                        #print(f'abs(_line_dist_perp(p, o, d_hat) - r) = {abs(_line_dist_perp(p, o, d_hat) - r)} > {band}')
-            return None
+                            break
+                if close < 2:
+                    continue
+                # prefer axis whose direction matches n_ref_hat most
+                dir_err = np.linalg.norm(d_hat - n_ref_hat)
+                if dir_err < best_dir_err:
+                    best_dir_err = dir_err
+                    best = (o, d_hat, r)
+            return best
 
-        def _twist_delta_deg_about_axis(q_prev, q_curr, d_hat):
-            """Signed twist angle (deg) of relative rotation about axis d̂ in current orientation."""
-            R_rel = (R.from_quat(q_curr) * R.from_quat(q_prev).inv())
-            Rm = R_rel.as_matrix()
-            # pick u ⟂ d̂ (deterministic)
-            a = np.array([1.0, 0.0, 0.0]);  b = np.array([0.0, 1.0, 0.0])
-            u = a if abs(np.dot(a, d_hat)) < 0.9 else b
-            u = u - np.dot(u, d_hat) * d_hat
-            u /= (np.linalg.norm(u) or 1.0)
-            u_p = Rm @ u
-            # ensure u_p stays on plane ⟂ d̂
-            u_p = u_p - np.dot(u_p, d_hat) * d_hat
-            nrm = np.linalg.norm(u_p)
-            if nrm == 0.0:
-                return 0.0
-            u_p /= nrm
-            # signed angle from u to u_p around d̂
-            s = np.dot(d_hat, np.cross(u, u_p))
-            c = np.clip(np.dot(u, u_p), -1.0, 1.0)
-            return float(np.degrees(np.arctan2(s, c)))
+        def _fix_quat_sign(q, q_ref):
+            # Ensure quaternion continuity (±q represent same rotation)
+            q = np.asarray(q, float); q_ref = np.asarray(q_ref, float)
+            return q if float(np.dot(q, q_ref)) >= 0.0 else -q
 
-        def _wrap_deg(x):
-            return ((x + 180.0) % 360.0) - 180.0
+        def _twist_delta_deg_about_fixed_axis(q_prev, q_curr, n_ref_hat):
+            """
+            Signed twist (deg) of relative rotation about FIXED unit axis n_ref_hat.
+            Uses swing–twist via quaternion projection, with sign continuity.
+            """
+            q_curr = _fix_quat_sign(q_curr, q_prev)
+            q_rel = (R.from_quat(q_curr) * R.from_quat(q_prev).inv()).as_quat()  # [x,y,z,w]
+            vx, vy, vz, w = q_rel
+            v_dot_n = vx * n_ref_hat[0] + vy * n_ref_hat[1] + vz * n_ref_hat[2]
+            delta_rad = 2.0 * np.arctan2(v_dot_n, w)
+            delta_deg = np.degrees(delta_rad)
+            return float(((delta_deg + 180.0) % 360.0) - 180.0)  # wrap to (-180,180]
 
         def _aligned(value_deg, step_deg, tol_deg):
             rem = value_deg % step_deg
             return min(abs(rem), abs(step_deg - rem)) <= tol_deg
 
+        # ---------- constants ----------
         step_deg = 360.0 / float(self.rotation_steps)
-        tol_deg  = np.degrees(self.tolerance)  # if your tolerance is radians; else use self.tolerance directly
-
-        # sequence state
-        mode = None                # "base" | "back" | None
-        sum_deg = 0.0
-        prev_quat = None
-        tracked_axis = None        # (o, d_hat, r) used for twist projection
+        tol_deg  = np.degrees(self.tolerance)  # if self.tolerance is radians; else use self.tolerance
 
         kept_rot, kept_shad, kept_axes = [], [], []
         pose_id = 0
 
-        sorted_rotations, sorted_shadows, sorted_parameters = _sort_by_axis_orientation(rotations, xy_shadows, cylinder_axis_parameters,tol_dir=1e-3, tol_pos=1e-3)
+        # 1) Build direction groups (+d and −d DIFFERENT)
+        groups, group_dirs = _group_indices_by_axis_direction(cylinder_axis_parameters, tol_dir=1e-3)
 
-        for idx, (old_id, face_id, edge_id, quat) in enumerate(sorted_rotations):
-            #print(f"Discretizing pose {old_id} ({idx+1}/{len(rotations)})...")
-            #print(f'sum_deg={sum_deg}, mode={mode}, tracked_axis={tracked_axis}')
-            # rotate mesh
-            rot = R.from_quat(quat); T = np.eye(4); T[:3, :3] = rot.as_matrix()
-            rot_mesh = self.convex_hull_mesh.copy(); rot_mesh.apply_transform(T)
+        # 2) Iterate groups; entering a new group resets counters and locks n_ref_hat
+        for g, idx_list in enumerate(groups):
+            n_ref_hat = group_dirs[g]
+            # if group has None (no axes), process poses as isolated (no accumulation)
+            if n_ref_hat is not None:
+                n_ref_hat = n_ref_hat / (np.linalg.norm(n_ref_hat) or 1.0)
 
-            rest_base, rest_back = _resting_sets(rot_mesh)
-            axes_with_r = _extract_axes_with_radius(cylinder_axis_parameters[idx])  # already pose-rotated
+            sum_deg = 0.0
+            q_prev = None  # last quaternion actually used for delta (after sign-fix)
+            have_sequence = False  # True once on-cylinder condition satisfied
 
-            # --- 1) radius/membership check FIRST ---
-            match_base = _pick_cyl_match(rest_base, axes_with_r)
-            match_back = _pick_cyl_match(rest_back, axes_with_r)
+            for idx in idx_list:
+                old_id, face_id, edge_id, quat = rotations[idx]
 
-            if match_base is None and match_back is None:
-                print(f'pose id when no cylinder detected: {pose_id}')
-                # Keep non-cylindrical pose
-                kept_rot.append((pose_id, face_id, edge_id, quat))
-                kept_shad.append(sorted_shadows[idx])
-                kept_axes.append(sorted_parameters[idx])  # or [] if you prefer none
-                pose_id += 1
+                # build current pose mesh
+                rot = R.from_quat(quat)
+                T = np.eye(4); T[:3, :3] = rot.as_matrix()
+                rot_mesh = self.convex_hull_mesh.copy(); rot_mesh.apply_transform(T)
 
-                # reset if no cylindrical resting detected
-                mode = None; sum_deg = 0.0; prev_quat = None; tracked_axis = None
-                continue
+                rest_base, rest_back = _resting_sets(rot_mesh)
+                axes_with_r = _extract_axes_with_radius(cylinder_axis_parameters[idx])
 
-            # decide active mode and matched axis
-            new_mode = "base" if match_base is not None else "back"
-            new_axis = match_base if match_base is not None else match_back  # (o, d_hat, r)
-
-            # reset sequence if switching side or cylinder axis
-            if (mode != new_mode) or (tracked_axis is None or np.linalg.norm(tracked_axis[1] - new_axis[1]) > 1e-6):
-                print(f'resetting cylinder sequence at pose {old_id} due to mode/axis change: {mode} -> {new_mode}, {tracked_axis} -> {new_axis}')
-                mode = new_mode
-                sum_deg = 0.0
-                prev_quat = quat
-                tracked_axis = new_axis
-                # allow the first pose of a new sequence to pass only if aligned at 0°
-                if _aligned(0.0, step_deg, tol_deg):
-                    print(f"Keeping pose {old_id}, pose id {pose_id} at 0.0° about {mode} axis")
+                if n_ref_hat is None:
+                    # No axis in this group -> keep pose as is; no accumulation
                     kept_rot.append((pose_id, face_id, edge_id, quat))
-                    kept_shad.append(sorted_shadows[idx])
-                    kept_axes.append(sorted_parameters[idx])
+                    kept_shad.append(xy_shadows[idx])
+                    kept_axes.append(cylinder_axis_parameters[idx])
                     pose_id += 1
-                continue
+                    # reset inner sequence just in case
+                    sum_deg = 0.0; q_prev = None; have_sequence = False
+                    continue
 
-            # --- 2) incremental twist about the current cylinder axis ---
-            delta = _twist_delta_deg_about_axis(prev_quat, quat, tracked_axis[1])
-            delta = _wrap_deg(delta)
-            sum_deg += delta
-            prev_quat = quat
+                # 3) Radius/membership check FIRST on both resting sets; pick best axis closest to n_ref_hat
+                match1 = _best_axis_match_for_group(rest_base, axes_with_r, n_ref_hat)
+                match2 = _best_axis_match_for_group(rest_back, axes_with_r, n_ref_hat)
+                match = match1 if (match1 and (not match2)) else (match2 if (match2 and (not match1)) else (match1 if (match1 and match2 and
+                        np.linalg.norm(match1[1] - n_ref_hat) <= np.linalg.norm(match2[1] - n_ref_hat)) else None))
 
-            if _aligned(sum_deg, step_deg, tol_deg):
-                print(f"Keeping pose {pose_id}, pose id {pose_id} at {sum_deg:.1f}° about {mode} axis")
-                kept_rot.append((pose_id, face_id, edge_id, quat))
-                kept_shad.append(sorted_shadows[idx])
-                kept_axes.append(sorted_parameters[idx])
-                pose_id += 1
+                if match is None:
+                    # Not on-cylinder -> keep pose (if you want), but reset accumulation
+                    kept_rot.append((pose_id, face_id, edge_id, quat))
+                    kept_shad.append(xy_shadows[idx])
+                    kept_axes.append(cylinder_axis_parameters[idx])
+                    pose_id += 1
+                    sum_deg = 0.0; q_prev = None; have_sequence = False
+                    continue
+
+                # 4) Accumulate twist about FIXED group axis
+                if not have_sequence:
+                    # first cylindrical pose in this group
+                    have_sequence = True
+                    q_prev = np.asarray(quat, float)
+                    # optional: keep if aligned at 0°
+                    if _aligned(0.0, step_deg, tol_deg):
+                        kept_rot.append((pose_id, face_id, edge_id, quat))
+                        kept_shad.append(xy_shadows[idx])
+                        kept_axes.append(cylinder_axis_parameters[idx])
+                        pose_id += 1
+                    continue
+
+                # sign-continuous delta about n_ref_hat
+                delta = _twist_delta_deg_about_fixed_axis(q_prev, quat, n_ref_hat)
+                sum_deg += delta
+                print(f"Pose {old_id} face id {face_id} delta {delta:.2f}° -> sum {sum_deg:.2f}° about axis {n_ref_hat}")
+                q_prev = _fix_quat_sign(np.asarray(quat, float), q_prev)  # store the sign-consistent version
+
+                if _aligned(sum_deg, step_deg, tol_deg):
+                    kept_rot.append((pose_id, face_id, edge_id, quat))
+                    kept_shad.append(xy_shadows[idx])
+                    kept_axes.append(cylinder_axis_parameters[idx])
+                    pose_id += 1
 
         return kept_rot, kept_shad, kept_axes
-        #return sorted_rotations, sorted_shadows, sorted_parameters
+
+
     

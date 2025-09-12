@@ -32,7 +32,7 @@ rounded_workpiece_names = ['Dk2a','Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1
 #workpiece_names =['Rl4i','Ql4i','Qf4i','Df4a','Rk2i']
 #workpiece_names =['Rl2i','Df2i','Dk4i','Dl4a','Qk4a','Rf4i','Rk4i','Rf2i','Dl2i']
 #workpiece_names =['Qf2a']
-workpiece_names = ['Kf1i']
+workpiece_names = ['Kf4i']
 
 # check if step file is centered or not, if the first letter of the workpiece name is 'k' or 'K' it is centered as it is a circle based part
 is_step_file_centered = 0
@@ -79,7 +79,7 @@ for workpiece_name in workpiece_names:
     # Find unique poses by considering symmetry with an adjustable tolerance, this is set for workpieces with feature sizes between 0.1 and 0.03 cm (I still think this is programmed weirdly)
     #symmetrically_unique_rotations = pose_finder.symmetry_handler(stable_rotations,2)
 
-    pose_finder.write_candidate_rotations_to_file(discretized_rotations, str(csv_path / (workpiece_name + '_candidate_rotations.csv')))
+    pose_finder.write_candidate_rotations_to_file(unique_rotations, str(csv_path / (workpiece_name + '_candidate_rotations.csv')))
 
     # Initialize the PoseVisualizer with the original and convex hull OBJ files and valid rotations
     pose_visualizer = PoseVisualizer(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '_convex_hull.obj')),discretized_rotations, discretized_shadows, discretized_axis_parameters)
