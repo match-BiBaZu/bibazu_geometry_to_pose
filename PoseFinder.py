@@ -49,6 +49,8 @@ class PoseFinder:
 
         # Ensure the mesh is centered around the centroid of the convex hull if not centered in input file
         if is_workpiece_centered == 0:
+            # Only subtract centroid from x and y, keep z unchanged
+            centroid_xy = np.array([centroid[0], centroid[1], 0.0], dtype=float)
             self._load_cylinder_from_csv(centroid)
         else:
             self._load_cylinder_from_csv(np.array([0,0,0], dtype=float))
