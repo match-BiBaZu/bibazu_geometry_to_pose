@@ -130,9 +130,6 @@ class PoseEliminator(PoseFinder):
         xy_shadows,                # list[np.ndarray]
         cylinder_axis_parameters,  # list[ list[(origin, direction[, radius]) | dict] ]  (already rotated per pose)
     ):
-        import numpy as np
-        from scipy.spatial.transform import Rotation as R
-
         if not rotations:
             return [], [], []
 
@@ -159,9 +156,6 @@ class PoseEliminator(PoseFinder):
                 if not placed:
                     groups.append((d, [idx]))
             return [idxs for (gdir, idxs) in groups], [gdir for (gdir, idxs) in groups]
-
-        def _line_dist_perp(p, o, d_hat):
-            return np.linalg.norm(np.cross(p - o, d_hat))  # ⟂ distance to axis line
 
         def _extract_axes_with_radius(per_pose_axes):
             """Return list[(o, d̂, r>0)] from dicts/tuples; normalize d."""
@@ -191,32 +185,51 @@ class PoseEliminator(PoseFinder):
             idx_x = np.where(np.abs(x - min_x) < self.tolerance)[0]
             return V[idx_z], V[idx_x]
 
-        def _best_axis_match_for_group(verts, axes_with_r, n_ref_hat):
-            """Pick axis closest to n_ref_hat that has ≥2 verts near radius. Return (o,d̂,r) or None."""
-            if verts.shape[0] < 2 or not axes_with_r: return None
-            abs_tol = float(self.tolerance); rel_tol = 1e-3
-            best = None; best_err = np.inf
+        def _line_dist_perp(p, o, d_hat):
+            return np.linalg.norm(np.cross(p - o, d_hat))  # ⟂ distance to axis line
+
+        def _axes_aligned_with_dir(axes_with_r, n_ref_hat, tol_dir=1e-3):
+            """Select all axes whose direction matches n_ref_hat (sign-sensitive)."""
+            aligned = []
             for (o, d_hat, r) in axes_with_r:
-                band = max(abs_tol, rel_tol * abs(r))
-                close = 0
+                if np.linalg.norm(d_hat - n_ref_hat) < tol_dir:
+                    aligned.append((o, d_hat, r))
+            return aligned
+
+        def _two_vertices_at_radius_for_any(verts, axes_subset):
+            """
+            True iff there exists at least one axis in axes_subset for which
+            there are >=2 vertices with |dist_perp - radius| within band.
+            Vertices may coincide across different axes (allowed).
+            """
+            if not axes_subset or verts.shape[0] < 2:
+                return False
+            for (o, d_hat, r) in axes_subset:
+                band = 10 * self.tolerance * abs(r) # abs + relative band
+                print(f"  Axis at {o} dir {d_hat} r={r} band={band}")
+                count = 0
                 for p in verts:
+                    print(f' abs(_line_dist_perp(p, o, d_hat) - r) <= band: {abs(_line_dist_perp(p, o, d_hat) - r)} <= {band}')
                     if abs(_line_dist_perp(p, o, d_hat) - r) <= band:
-                        close += 1
-                        if close >= 2: break
-                if close < 2: continue
-                err = np.linalg.norm(d_hat - n_ref_hat)
-                if err < best_err: best_err = err; best = (o, d_hat, r)
-            return best
+                        count += 1
+                        print(f"    Vertex {p} at radius (count={count})")
+                        if count >= 2:
+                            return True
+            return False
 
         def _is_on_cylinder_for_pose(idx, n_ref_hat):
-            """True if pose idx is on a cylinder aligned with n_ref_hat (base/back)."""
+            """Pose is on-cylinder if base OR back has ≥2 verts at radius for ANY aligned axis."""
             old_id, face_id, edge_id, q = rotations[idx]
             rot = R.from_quat(q); T = np.eye(4); T[:3, :3] = rot.as_matrix()
             m = self.convex_hull_mesh.copy(); m.apply_transform(T)
             rest_base, rest_back = _resting_sets(m)
             axes = _extract_axes_with_radius(cylinder_axis_parameters[idx])
-            return (_best_axis_match_for_group(rest_base, axes, n_ref_hat) is not None) or \
-                (_best_axis_match_for_group(rest_back, axes, n_ref_hat) is not None)
+            aligned_axes = _axes_aligned_with_dir(axes, n_ref_hat, tol_dir=1e-3)
+            print(f"Pose {idx}: {len(axes)} axes, {len(aligned_axes)} aligned with n_ref.")
+            if not aligned_axes:
+                return False
+            return _two_vertices_at_radius_for_any(rest_base, aligned_axes) or \
+                _two_vertices_at_radius_for_any(rest_back, aligned_axes)
 
         def _fix_quat_sign(q, q_ref):
             q = np.asarray(q, float); q_ref = np.asarray(q_ref, float)
@@ -231,24 +244,19 @@ class PoseEliminator(PoseFinder):
             ang = 2.0 * np.arctan2(vdot, w)         # radians
             return float(np.degrees(ang) % 360.0)   # [0,360)
 
-        def _wrap_deg(x):  # (-180,180]
-            return ((x + 180.0) % 360.0) - 180.0
-
-        # ---------- constants ----------
-        step_deg = 360.0 / float(self.rotation_steps)
-        tol_deg  = np.degrees(self.tolerance)  # use self.tolerance directly if already deg
-        sel_tol  = max(tol_deg, step_deg * 0.15)  # selection tolerance around grid hits
-
+        # ---------- main ----------
         kept_rot, kept_shad, kept_axes = [], [], []
         pose_id = 0
 
         groups, group_dirs = _group_indices_by_axis_direction(cylinder_axis_parameters, tol_dir=1e-3)
+        print(f"Found {len(groups)} groups of poses by cylinder axis direction.")
 
         for g, idxs in enumerate(groups):
             n_ref = group_dirs[g]
             if n_ref is None:
-                # No axis in this group → pass through in given order
+                # No axis in this group → pass through
                 for i in idxs:
+                    print(f"Warning: Pose {i} has no cylinder axis; keeping without discretization.")
                     old_id, face_id, edge_id, quat = rotations[i]
                     kept_rot.append((pose_id, face_id, edge_id, quat))
                     kept_shad.append(xy_shadows[i])
@@ -258,83 +266,61 @@ class PoseEliminator(PoseFinder):
 
             n_ref = n_ref / (np.linalg.norm(n_ref) or 1.0)
 
-            # Pick reference quaternion: first on-cylinder in group; else first
+            # Pick reference quaternion: first pose in group that satisfies ANY-axis on-cylinder test; else first pose
             q_ref = None
-            on_cyl = {}
+            on_cyl_flag = {}
             for i in idxs:
-                oc = _is_on_cylinder_for_pose(i, n_ref)
-                on_cyl[i] = oc
-                if q_ref is None and oc:
+                on_cyl = _is_on_cylinder_for_pose(i, n_ref)
+                print(f"Pose {i} in group {g} is {'on-cylinder' if on_cyl else 'not on-cylinder'}.")
+                on_cyl_flag[i] = on_cyl
+                if q_ref is None and on_cyl:
                     q_ref = np.asarray(rotations[i][3], float)
+                    print(f"Selected pose {i} as reference for group {g}.")
             if q_ref is None:
                 q_ref = np.asarray(rotations[idxs[0]][3], float)
+                print(f"Warning: No on-cylinder pose found in group {g}; using first pose {idxs[0]} as reference.")
+            
+            print(f"Group {g}: n_ref={n_ref}, reference pose id={i} (on-cylinder={on_cyl_flag[i]})")
 
-            # Compute absolute twist for all poses and sort by angle
-            items = []
+            # Compute absolute twist for cylindrical poses; non-cylindrical kept after
+            cyl_items, noncyl_items = [], []
             for i in idxs:
-                theta = _abs_twist_deg_wrt_ref(q_ref, rotations[i][3], n_ref)
-                items.append((theta, i))
-            items.sort(key=lambda t_i: t_i[0])  # monotonic twist order
+                if on_cyl_flag[i]:
+                    theta = _abs_twist_deg_wrt_ref(q_ref, rotations[i][3], n_ref)
+                    cyl_items.append((theta, i))
+                else:
+                    noncyl_items.append(i)
 
-            # Build boolean list in twist order and detect contiguous on-cylinder arcs
-            thetas = [t for (t, i) in items]
-            order  = [i for (t, i) in items]
-            flags  = [on_cyl[i] for i in order]
+            # Sort cylindrical by increasing twist
+            cyl_items.sort(key=lambda t_i: t_i[0])
 
-            # Handle wrap-around arcs: duplicate once with θ+360 to split if needed
-            def _emit_kept_for_arc(start, end):
-                """Select poses near θ_start + m*step within [θ_start, θ_end] (+sel_tol)."""
-                θ_start = thetas[start]; θ_end = thetas[end-1]
-                targets = []
-                m = 0
-                while True:
-                    θ_t = θ_start + m * step_deg
-                    if θ_t > θ_end + sel_tol: break
-                    targets.append(θ_t); m += 1
-                used = set()
-                for θ_t in targets:
-                    # pick nearest unused pose within sel_tol
-                    best_j = None; best_err = None
-                    for j in range(start, end):
-                        if j in used: continue
-                        err = abs(_wrap_deg(thetas[j] - θ_t))
-                        if best_err is None or err < best_err:
-                            best_err, best_j = err, j
-                    if best_j is not None and best_err <= sel_tol:
-                        i = order[best_j]
+            print(f"Group {g}: {len(cyl_items)} cylindrical poses, {len(noncyl_items)} non-cylindrical poses.")
+
+            # Segment-based filter on cylindrical list (keep ~4 evenly spaced)
+            L = len(cyl_items)
+            if L > 0:
+                threshold = max(1, int(round(L / self.rotation_steps)))
+                for k, (_, i) in enumerate(cyl_items):
+                    if (k % threshold) == 0:
+                        print(f"Keeping pose {i} in cylindrical group {g} (k={k}, threshold={threshold})")
                         old_id, face_id, edge_id, quat = rotations[i]
                         kept_rot.append((pose_id, face_id, edge_id, quat))
                         kept_shad.append(xy_shadows[i])
                         kept_axes.append(cylinder_axis_parameters[i])
-                        nonlocal_pose_id[0] += 1
-                        used.add(best_j)
+                        pose_id += 1
 
-            # iterate arcs
-            nonlocal_pose_id = [pose_id]  # tiny trick to mutate outer variable
-            N = len(order)
-            s = 0
-            while s < N:
-                # skip non-cyl poses (append as-is or drop; here we keep them)
-                while s < N and not flags[s]:
-                    i = order[s]
-                    old_id, face_id, edge_id, quat = rotations[i]
-                    kept_rot.append((nonlocal_pose_id[0], face_id, edge_id, quat))
-                    kept_shad.append(xy_shadows[i])
-                    kept_axes.append(cylinder_axis_parameters[i])
-                    nonlocal_pose_id[0] += 1
-                    s += 1
-                if s >= N:
-                    break
-                # grow arc
-                e = s
-                while e < N and flags[e]:
-                    e += 1
-                _emit_kept_for_arc(s, e)
-                s = e
-
-            pose_id = nonlocal_pose_id[0]
+            # Append non-cylindrical (preserve relative order)
+            for i in noncyl_items:
+                print(f"Keeping non-cylindrical pose {i} in group {g}")
+                old_id, face_id, edge_id, quat = rotations[i]
+                kept_rot.append((pose_id, face_id, edge_id, quat))
+                kept_shad.append(xy_shadows[i])
+                kept_axes.append(cylinder_axis_parameters[i])
+                pose_id += 1
 
         return kept_rot, kept_shad, kept_axes
+
+
 
 
 
