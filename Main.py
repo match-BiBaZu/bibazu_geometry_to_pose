@@ -32,8 +32,8 @@ rounded_workpiece_names = ['Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl2
 #workpiece_names =['Rl4i','Ql4i','Qf4i','Df4a','Rk2i']
 #workpiece_names =['Rl2i','Df2i','Dk4i','Dl4a','Qk4a','Rf4i','Rk4i','Rf2i','Dl2i']
 #workpiece_names = ['Kl4i','Kl1i','Kl2a','Rl1a']
-#workpiece_names = ['Kk1a','Rl1a']
-workpiece_names = rounded_workpiece_names
+workpiece_names = ['Kk1a','Rl1a']
+#workpiece_names = rounded_workpiece_names
 
 # check if step file is centered or not, if the first letter of the workpiece name is 'k' or 'K' it is centered as it is a circle based part
 step_file_centered = 0
@@ -64,7 +64,7 @@ for workpiece_name in workpiece_names:
     candidate_rotations, xy_shadows, cylinder_axis_parameters = pose_finder.find_candidate_rotations_by_face_and_shadow_alignment()
 
     # Initialize the PoseEliminator with the convex hull OBJ file and self OBJ file
-    pose_eliminator = PoseEliminator(str(workpiece_path / (workpiece_name + '_convex_hull.obj')), str(workpiece_path / (workpiece_name + '.obj')), 0.01, 1,5)
+    pose_eliminator = PoseEliminator(str(workpiece_path / (workpiece_name + '_convex_hull.obj')), str(workpiece_path / (workpiece_name + '.obj')), 0.01, 1,15)
 
     # Remove duplicate rotations (if any) from the candidate rotations
     unique_rotations, unique_shadows, unique_axis_parameters = pose_eliminator.remove_duplicates(candidate_rotations, xy_shadows, cylinder_axis_parameters)

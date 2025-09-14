@@ -18,8 +18,8 @@ class PoseEliminator(PoseFinder):
         self.rotation_steps = int(rotation_steps)
         #as a mesh is not perfectly aligned to a cylinder axis, we allow a certain wobble angle
         self.wobble_tolerance = 2 * np.sin((wobble_angle * np.pi) / 360)
-
-        self.cone_plane_band_scale = getattr(self, 'cone_plane_band_scale', 100.0) * self.wobble_tolerance
+        # some extra values to twiddle to get the poses resting on 'cone features' working        
+        self.cone_plane_band_scale = getattr(self, 'cone_plane_band_scale', 10.0) * self.wobble_tolerance
         self.cone_radius_band_mult = getattr(self, 'cone_radius_band_mult', 25.0) * self.wobble_tolerance
 
 
@@ -151,9 +151,6 @@ class PoseEliminator(PoseFinder):
         if not rotations:
             return [], [], []
 
-        import numpy as np
-        from scipy.spatial.transform import Rotation as R
-
         # ---------- helpers ----------
         def _group_by_first_dir(params):
             """Return (groups, group_dirs) with +d and −d treated as different."""
@@ -208,6 +205,7 @@ class PoseEliminator(PoseFinder):
             min_z, min_x = float(np.min(z)), float(np.min(x))
             idx_z = np.where((z - min_z) <= band_abs)[0]
             idx_x = np.where((x - min_x) <= band_abs)[0]
+            print(f"Resting sets: {len(idx_z)} base, {len(idx_x)} back vertices within ±{band_abs:.3g} band.")
 
             # normals
             try:
@@ -298,7 +296,7 @@ class PoseEliminator(PoseFinder):
                 hit_back = _axis_hit_on_plane(backV, ax)
                 if hit_base and hit_back:
                     radii_both.append(ax[2])  # r
-                    print(f"Pose {idx} axis with radius {ax[2]} hits both planes.")
+                    #print(f"Pose {idx} axis with radius {ax[2]} hits both planes.")
 
             if len(radii_both) < 2:
                 return False
@@ -307,7 +305,7 @@ class PoseEliminator(PoseFinder):
             thresh = 100.0 * float(self.tolerance)
             for i in range(len(radii_both)):
                 for j in range(i+1, len(radii_both)):
-                    print(f"Pose {idx} comparing radii {radii_both[i]} and {radii_both[j]}. is thresh {thresh} < {abs(radii_both[i] - radii_both[j])}?")
+                    #print(f"Pose {idx} comparing radii {radii_both[i]} and {radii_both[j]}. is thresh {thresh} < {abs(radii_both[i] - radii_both[j])}?")
                     if abs(radii_both[i] - radii_both[j]) > thresh:
                         return True
             return False
@@ -341,22 +339,54 @@ class PoseEliminator(PoseFinder):
                 m = m_new
             return m
 
-        # Non-rolling cylinder poses: axis ~ pure ±Y or ±Z
+        # Non-wobbly cylinder poses: axis ~ pure ±Y or ±Z
         def _pose_has_pure_y_or_z(idx, n_ref):
             axes = _extract_axes_with_radius(cylinder_axis_parameters[idx])
             aligned = _axes_aligned(axes, n_ref)
             if not aligned:
                 return False
+            
+            ex = np.array([1.0, 0.0, 0.0])
             ey = np.array([0.0, 1.0, 0.0])
             ez = np.array([0.0, 0.0, 1.0])
-            tol = float(self.wobble_tolerance)
+            tol = float(self.wobble_tolerance) * 0.3
             for (_, d, _r) in aligned:
+                if min(np.linalg.norm(d - ex), np.linalg.norm(d + ex)) < tol:
+                    return True
                 if min(np.linalg.norm(d - ey), np.linalg.norm(d + ey)) < tol:
                     return True
                 if min(np.linalg.norm(d - ez), np.linalg.norm(d + ez)) < tol:
                     return True
             return False
 
+        # finding best starting point for twist angle 0
+        def _twist_about_axis_deg(q, n_ref):
+            """Twist (deg) of quaternion q about axis n_ref (no ref pose; identity as ref)."""
+            import numpy as np
+            from scipy.spatial.transform import Rotation as R
+            q = np.asarray(q, float)
+            # ensure same hemisphere as identity so w >= 0 (shortest)
+            if q[3] < 0: q = -q
+            vx, vy, vz, w = q
+            vdot = vx*n_ref[0] + vy*n_ref[1] + vz*n_ref[2]
+            ang = 2.0*np.arctan2(vdot, w)
+            return float(np.degrees(ang) % 360.0)
+
+        def _order_indices_by_identity_start(indices, n_ref, rotations):
+            """
+            Pick start = pose with minimal |twist about n_ref| wrt identity.
+            Return indices ordered from start, then wrap around to one before start (looping).
+            """
+            import numpy as np
+            # twist about axis for each pose
+            angles = [ _twist_about_axis_deg(rotations[i][3], n_ref) for i in indices ]
+            # measure closeness to 0 or 360
+            def wrapdist(a): 
+                a = a % 360.0
+                return min(a, 360.0 - a)
+            start = int(np.argmin([wrapdist(a) for a in angles]))
+            ordered = indices[start:] + indices[:start]  # wrap
+            return ordered, [angles[indices.index(i)] for i in ordered]
         # ---------- main ----------
         kept_rot, kept_shad, kept_axes = [], [], []
         pose_id = 0
@@ -405,40 +435,40 @@ class PoseEliminator(PoseFinder):
                 q_ref = np.asarray(rotations[cone_idx[0]][3], float)
 
                 # order by absolute twist about n_cone
-                items = [( _abs_twist_deg_wrt_ref(q_ref, rotations[i][3], n_cone), i ) for i in cone_idx]
-                items.sort(key=lambda t_i: t_i[0])
-
-                # keep ~rotation_steps evenly spaced samples of the 0–360° sweep
-                L = len(items)
+                # choose start closest to identity-about-axis, then order and wrap
+                ordered_cone_idx, cone_angles = _order_indices_by_identity_start(cone_idx, n_cone, rotations)
+                # keep ~rotation_steps evenly spaced
+                L = len(ordered_cone_idx)
                 thr = max(1, int(round(L / float(self.rotation_steps))))
-                for k, (_, i) in enumerate(items):
+                for k, i in enumerate(ordered_cone_idx):
                     if (k % thr) == 0:
-                        print(f"Cone group {g}, keeping pose {i} at new id {pose_id} (index {k} of {L}, step {thr})")
+                        print(f"Cone pose kept: {i} at new id {pose_id} (angle {cone_angles[k]:.1f}°)")
                         old_id, face_id, edge_id, quat = rotations[i]
                         kept_rot.append((pose_id, face_id, edge_id, quat))
                         kept_shad.append(xy_shadows[i])
                         kept_axes.append(cylinder_axis_parameters[i])
                         pose_id += 1
 
+
             # --- CYLINDER SIDE: only keep non-rolling (axis ~ pure ±Y or ±Z), then segment filter ---
             if cyl_idx:
                 cyl_idx_pure = [i for i in cyl_idx if _pose_has_pure_y_or_z(i, n_group)]
                 if cyl_idx_pure:
-                    q_ref_c = np.asarray(rotations[cyl_idx_pure[0]][3], float)
-                    items_c = [( _abs_twist_deg_wrt_ref(q_ref_c, rotations[i][3], n_group), i ) for i in cyl_idx_pure]
-                    items_c.sort(key=lambda t_i: t_i[0])
-                    Lc = len(items_c)
+                    # first filter to ±Y/±Z as you already do → cyl_idx_pure
+                    ordered_cyl_idx, cyl_angles = _order_indices_by_identity_start(cyl_idx_pure, n_group, rotations)
+                    Lc = len(ordered_cyl_idx)
                     thr_c = max(1, int(round(Lc / float(self.rotation_steps))))
-                    for k, (_, i) in enumerate(items_c):
+                    for k, i in enumerate(ordered_cyl_idx):
                         if (k % thr_c) == 0:
-                            print(f"Cylinder (pure Y/Z) pose kept: {i}")
+                            print(f"Cylinder pose kept: {i} at new id {pose_id}")
                             old_id, face_id, edge_id, quat = rotations[i]
                             kept_rot.append((pose_id, face_id, edge_id, quat))
                             kept_shad.append(xy_shadows[i])
                             kept_axes.append(cylinder_axis_parameters[i])
                             pose_id += 1
-                else:
-                    print(f"No cylinder poses with axis ~ ±Y/±Z in group {g}; skipping cylinder saves for this group.")
+
+                #else:
+                    #print(f"No cylinder poses with axis ~ ±Y/±Z in group {g}; skipping cylinder saves for this group.")
 
             # --- NON-CYL poses: pass through (preserve order) ---
             for i in other_idx:
