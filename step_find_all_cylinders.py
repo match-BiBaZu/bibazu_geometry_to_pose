@@ -2,10 +2,12 @@
 Usage:
     python find_largest_cylinder_step.py part.STEP [output.csv]
 
-- Reads STEP file and finds largest cylinder (or circle). please center the part around the geometric centroid first!
+- Reads STEP file and finds largest cylinder (or circle). 
 - Writes result as CSV:
     First line = categories
     Second line = values
+
+Note: please center the co-ordinates of part around the geometric centroid first! I could not be bothered so I just added a hacky offset for my circle parts and Rl1a
 """
 
 import sys, re, math, csv, os

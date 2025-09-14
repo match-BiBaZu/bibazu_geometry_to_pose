@@ -7,7 +7,7 @@ import csv
 from scipy.spatial import cKDTree
 
 class PoseFinder:
-    def __init__(self, convex_hull_obj_file: str, obj_file: str, tolerance: float = 1e-5, is_workpiece_centered: bool = 0):
+    def __init__(self, convex_hull_obj_file: str, obj_file: str, tolerance: float = 1e-5, is_workpiece_centered: int = 0):
         """
         Initialize the PoseFinder with the convex hull OBJ file.
         :param convex_hull_obj_file: Path to the convex hull OBJ file.
@@ -50,10 +50,11 @@ class PoseFinder:
         # Ensure the mesh is centered around the centroid of the convex hull if not centered in input file
         if is_workpiece_centered == 0:
             # Only subtract centroid from x and y, keep z unchanged
-            centroid_xy = np.array([centroid[0], centroid[1], 0.0], dtype=float)
             self._load_cylinder_from_csv(centroid)
-        else:
-            self._load_cylinder_from_csv(np.array([0,0,0], dtype=float))
+        elif is_workpiece_centered == 1: #specially for Rl1a as it's stl was created with a shifted center
+            self._load_cylinder_from_csv(np.array([centroid[0]-7.5, 10, centroid[2]-5], dtype=float))
+        elif is_workpiece_centered == 2:
+            self._load_cylinder_from_csv(np.array([0,0,centroid[2]], dtype=float))
 
         # Check if at least 3 vertices align with the lowest z-axis (resting face)
         z_min = np.min(self.mesh.vertices[:, 2])
