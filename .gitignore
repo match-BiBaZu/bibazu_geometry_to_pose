@@ -172,11 +172,12 @@ cython_debug/
 
 # Ignore all of the workpiece files
 Werkstücke_STL_grob/*
+Werkstücke_STL_fein/*
 
 # Ignore the output files
 *Poses_Found*
 
 # Ignore the csv files
 *.csv
-
+*.txt
 

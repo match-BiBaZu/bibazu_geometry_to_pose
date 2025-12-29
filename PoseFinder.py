@@ -51,10 +51,8 @@ class PoseFinder:
         if is_workpiece_centered == 0:
             # Only subtract centroid from x and y, keep z unchanged
             self._load_cylinder_from_csv(centroid)
-        elif is_workpiece_centered == 1: #specially for Rl1a as it's stl was created with a shifted center
-            self._load_cylinder_from_csv(np.array([centroid[0]-7.5, 10, centroid[2]-5], dtype=float))
-        elif is_workpiece_centered == 2:
-            self._load_cylinder_from_csv(np.array([0,0,centroid[2]], dtype=float))
+        else:  # specially for Rl1a as it's stl was created with a shifted center
+            self._load_cylinder_from_csv()
 
         # Check if at least 3 vertices align with the lowest z-axis (resting face)
         z_min = np.min(self.mesh.vertices[:, 2])
@@ -334,7 +332,7 @@ class PoseFinder:
 
     def find_candidate_rotations_by_face_and_shadow_alignment(self) -> tuple[
         list[tuple[int, int, int, tuple[float, float, float, float]]],
-        list[np.ndarray],
+        list[tuple],
         list[list[tuple[tuple[float, float, float], tuple[float, float, float]]]]
     ]:
         face_rotations, base_xy_shadows, base_shadow_angles = \
@@ -364,18 +362,19 @@ class PoseFinder:
                 combined_shadows.append(shadow_variants[j])
 
                 # rotate every cylinder axis with this pose
-                per_pose_axes: list[tuple[tuple[float,float,float], tuple[float,float,float]]] = []
-                for k, (o0, d0) in enumerate(zip(origins, dirs)):
-                    upd = self._update_axis_pose(q_total, origin=o0, direction=d0)
-                    if upd is None:
-                        continue
-                    o_r, d_r = upd
-                    # include radius if available as 3rd element (keeps downstream extractors happy)
-                    if k < len(radii) and radii[k] is not None and radii[k] > 0:
-                        per_pose_axes.append((tuple(o_r.tolist()), tuple(d_r.tolist()), float(radii[k])))
-                    else:
-                        per_pose_axes.append((tuple(o_r.tolist()), tuple(d_r.tolist())))
-                cylinder_axis_params.append(per_pose_axes)
+                if origins and dirs:
+                    per_pose_axes: list[tuple[tuple[float,float,float], tuple[float,float,float]]] = []
+                    for k, (o0, d0) in enumerate(zip(origins, dirs)):
+                        upd = self._update_axis_pose(q_total, origin=o0, direction=d0)
+                        if upd is None:
+                            continue
+                        o_r, d_r = upd
+                        # include radius if available as 3rd element (keeps downstream extractors happy)
+                        if k < len(radii) and radii[k] is not None and radii[k] > 0:
+                            per_pose_axes.append((tuple(o_r.tolist()), tuple(d_r.tolist()), float(radii[k])))
+                        else:
+                            per_pose_axes.append((tuple(o_r.tolist()), tuple(d_r.tolist())))
+                    cylinder_axis_params.append(per_pose_axes)
 
                 candidate_count += 1
 
@@ -410,6 +409,7 @@ class PoseFinder:
 
                         tree = cKDTree(rotated_vertices)
                         dists, _ = tree.query(check_rotated_vertices, k=1)
+                        print(f"Comparing rotation {index} with rotation {check_index}, max distance: {max(dists)}")
 
                         if max(dists) < symmetry_tolerance:
                             assigned_rotations[check_index] = assymetric_pose_count
@@ -419,14 +419,100 @@ class PoseFinder:
         # Return the assigned rotations in the same order as the input
         return [(assigned_rotations[i], rotations[i][1], rotations[i][2], quat) for i, (_, _, _, quat) in enumerate(rotations)]
 
-    def write_candidate_rotations_to_file(self, candidate_rotations: list[tuple[int, int, int, tuple[float, float, float, float]]], output_file: str):
+    def write_candidate_rotations_to_file(self, 
+                                          candidate_rotations: list[tuple[int, int, int, tuple[float, float, float, float]]], 
+                                          pose_types: list[int], 
+                                          cylinder_radius: list[int], 
+                                          cylinder_axis_origin: list[list[tuple]], 
+                                          cylinder_axis_direction: list[list[tuple]],
+                                          cylinder_group_ids: list[list[int]],
+                                          output_file: str):
         """
         Writes the candidate rotations to a file in a readable format.
         :param candidate_rotations: List of candidate rotations.
+        :param pose_types: List of pose types corresponding to each rotation.
+        :param cylinder_radius: List of cylinder radii for each pose.
+        :param cylinder_axis_origin: List of cylinder axis origins (x, y, z) for each pose.
+        :param cylinder_axis_direction: List of cylinder axis directions (x, y, z) for each pose.
         :param output_file: Path to the output file.
         """
         with open(output_file, 'w') as f:
-            f.write("PoseID,FaceID,EdgeID,QuatX,QuatY,QuatZ,QuatW\n")
-            # Write each rotation in the format: index, face_id, edge_id, quaternion (
-            for rotation in candidate_rotations:
-                f.write(f"{rotation[0]},{rotation[1]},{rotation[2]},{rotation[3][0]},{rotation[3][1]},{rotation[3][2]},{rotation[3][3]}\n")
+            f.write("PoseID,FaceID,EdgeID,PoseType,Cylinder_Radius,CylinderGroupID,AxisOriginX,AxisOriginY,AxisOriginZ,AxisDirX,AxisDirY,AxisDirZ,QuatX,QuatY,QuatZ,QuatW\n")
+            for i, rotation in enumerate(candidate_rotations):
+                quat = rotation[3]
+                #origin = cylinder_axis_origin[i] if i < len(cylinder_axis_origin) else (0.0, 0.0, 0.0)
+                #direction = cylinder_axis_direction[i] if i < len(cylinder_axis_direction) else (0.0, 0.0, 1.0)
+                origin = cylinder_axis_origin[i]
+                direction = cylinder_axis_direction[i]
+
+                f.write(f"{rotation[0]},{rotation[1]},{rotation[2]},"
+                        f"{pose_types[i]},{cylinder_radius[i]},{cylinder_group_ids[i]},"
+                        f"{origin[0]},{origin[1]},{origin[2]},"
+                        f"{direction[0]},{direction[1]},{direction[2]},"
+                        f"{quat[0]},{quat[1]},{quat[2]},{quat[3]}\n")
+
+    def write_pose_shadows_to_file(
+        self,
+        rotations: list[tuple[int, int, int, tuple[float, float, float, float]]],
+        shadows: list[np.ndarray] | None = None,
+        out_dir: str = "Shadows",
+        integer: bool = True,
+        decimals: int = 0,
+    ) -> list[str]:
+        """
+        Write the convex-hull XY shadow for each pose to txt files:
+        Shadows/<workpieceId>_<poseId>.txt
+
+        File format:
+            //Please don't alter its structure or it may become unreadable!
+            x1,y1
+            x2,y2
+            ...
+
+        Args:
+            rotations: [(pose_id, face_id, edge_id, quat[x,y,z,w]), ...]
+            shadows: optional list of precomputed shadows (same order as rotations).
+                    Each is (N,3) on z=const. If None, they are computed here.
+            out_dir: output directory.
+            integer: if True, write integer coordinates (rounded). If False, write floats.
+            decimals: number of decimal places when integer=False (ignored when integer=True).
+
+        Returns:
+            List of file paths written.
+        """
+        import os
+        os.makedirs(out_dir, exist_ok=True)
+
+        written = []
+        for idx, (pose_id, _face_id, _edge_id, quat) in enumerate(rotations):
+            # Use provided shadow if available; otherwise compute from rotated convex hull
+            if shadows is not None and idx < len(shadows) and shadows[idx] is not None:
+                shadow_xy = np.asarray(shadows[idx], float)[:, :2]
+            else:
+                rot = R.from_quat(quat)
+                verts_rot = rot.apply(self.convex_hull_mesh.vertices)
+                shadow, _ = self._compute_xy_shadow(verts_rot)
+                shadow_xy = shadow[:, :2]
+
+            # Format coordinates
+            if integer:
+                xy_out = np.rint(shadow_xy).astype(int)
+                def fmt_pair(x, y): return f"{int(x)},{int(y)}"
+            else:
+                xy_out = np.round(shadow_xy, decimals=decimals)
+                def fmt_pair(x, y): return f"{x:.{decimals}f},{y:.{decimals}f}"
+
+            # File path: <stem>_<poseId>.txt
+            fname = f"{self.obj_stem}_{pose_id}.txt"
+            fpath = os.path.join(out_dir, fname)
+
+            # Write file
+            with open(fpath, "w", newline="\n") as f:
+                f.write("//This file was created by GripperApplet\n")
+                f.write("//Please don't alter its structure or it may become unreadable!\n")
+                for x, y in xy_out:
+                    f.write(fmt_pair(x, y) + "\n")
+
+            written.append(fpath)
+
+        return written

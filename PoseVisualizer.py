@@ -11,7 +11,8 @@ import os
 class PoseVisualizer:
     def __init__(self, original_obj_file: str = None, convex_hull_obj_file: str = None,
                  valid_rotations: list = None, xy_shadows: list = None,
-                 cylinder_axis_params: list | None = None):
+                 cylinder_axis_params: list | None = None,
+                 font_scale: float = 1.2):
         """
         Initialize the PoseVisualizer.
 
@@ -57,6 +58,15 @@ class PoseVisualizer:
                     rot_idx = rot_tuple[0]
                     # accept None or [] gracefully
                     self._cyl_axes_by_rot_idx[rot_idx] = list(cyl_list or [])
+        
+        # font sizes (scaled)
+        self.fs = {
+            "tick":      int(9  * font_scale),
+            "legend":    int(10 * font_scale),
+            "title":     int(9 * font_scale),
+            "suptitle":  int(14 * font_scale),
+            "coord_lbl": int(11 * font_scale),
+        }
 
     def _rotate_mesh(self, mesh, quat = None):
         """
@@ -96,6 +106,11 @@ class PoseVisualizer:
         ax.set_xlim(mid_x - max_range, mid_x + max_range)
         ax.set_ylim(mid_y - max_range, mid_y + max_range)
         ax.set_zlim(mid_z - max_range, mid_z + max_range)
+
+        # bigger tick labels
+        ax.tick_params(axis='x', which='both', labelsize=self.fs["tick"])
+        ax.tick_params(axis='y', which='both', labelsize=self.fs["tick"])
+        ax.tick_params(axis='z', which='both', labelsize=self.fs["tick"])
     
     def _plot_shadow(self, ax, shadow_vertices: np.ndarray, title: str):
         """
@@ -110,7 +125,7 @@ class PoseVisualizer:
         faces = [[0, i, i + 1] for i in range(1, len(shadow_vertices) - 1)]
         ax.plot_trisurf(shadow_vertices[:, 0], shadow_vertices[:, 1], shadow_vertices[:, 2],
                         triangles=faces, color='gray', alpha=0.5, edgecolor='k')
-        ax.set_title(title)
+        ax.set_title(title, fontsize=self.fs["title"])
 
     def _add_reference_planes(self, ax, vertices, plane_alpha=0.1):
         """
@@ -175,7 +190,7 @@ class PoseVisualizer:
             Patch(facecolor='orange', edgecolor='k', label='Workpiece'),  # assuming mesh color is orange
             Line2D([0],[0], color='m', lw=2, label='Cylinder Axis'),
         ]
-        ax.legend(handles=legend_elements, loc='upper left', fontsize='x-small')
+        ax.legend(handles=legend_elements, loc='upper left', fontsize=self.fs["legend"])
 
     def _plot_centroid(self, ax, vertices: np.ndarray, faces: np.ndarray, title: str = None):
         """
@@ -227,10 +242,13 @@ class PoseVisualizer:
             ax.quiver(*origin, 0,      0,      length, color='b', linewidth=1.2, zorder=zorder)
 
             # Labels
-            ax.text(*(origin + [length, 0, 0]), 'X', color='r', fontsize=7, va='bottom', ha='left', zorder=zorder+1)
-            ax.text(*(origin + [0, length, 0]), 'Y', color='g', fontsize=7, va='bottom', ha='left', zorder=zorder+1)
-            ax.text(*(origin + [0, 0, length]), 'Z', color='b', fontsize=7, va='bottom', ha='left', zorder=zorder+1)
-
+            ax.text(*(origin + [length, 0, 0]), 'X', color='r', fontsize=self.fs["coord_lbl"],
+                    va='bottom', ha='left', zorder=zorder+1)
+            ax.text(*(origin + [0, length, 0]), 'Y', color='g', fontsize=self.fs["coord_lbl"],
+                    va='bottom', ha='left', zorder=zorder+1)
+            ax.text(*(origin + [0, 0, length]), 'Z', color='b', fontsize=self.fs["coord_lbl"],
+                    va='bottom', ha='left', zorder=zorder+1)
+            
     def _add_cylinder_axis(self, ax, cylinders, scale=1.0, zorder=12):
         """
         Draw one or many cylinder axes.
@@ -286,6 +304,46 @@ class PoseVisualizer:
             p1 = o + 0.5 * length * d
             ax.plot([p0[0], p1[0]], [p0[1], p1[1]], [p0[2], p1[2]], linewidth=2.0, color='m', zorder=zorder)
             ax.scatter([o[0]], [o[1]], [o[2]], color='m', s=18, zorder=zorder+1)
+        # --- helpers to add inside the class -------------------------------------
+        
+    def _rotate_axes_for_pose(self, cyl_list, quat):
+        """Rotate a list of cylinder axes (origin, direction) by pose quaternion into world frame."""
+        if not cyl_list:
+            return []
+        rot = R.from_quat(quat)
+        out = []
+        for c in cyl_list:
+            if isinstance(c, dict):
+                o = np.asarray(c["origin"], float)
+                d = np.asarray(c["direction"], float)
+            else:
+                o = np.asarray(c[0], float)
+                d = np.asarray(c[1], float)
+            o_r = rot.apply(o)
+            d_r = rot.apply(d)
+            n = np.linalg.norm(d_r) or 1.0
+            out.append((o_r, d_r / n))
+        return out
+
+    def _order_indices_by_identity_start(self, indices, axis_dir, rotations):
+        """
+        For given pose indices and a fixed axis_dir (unit), pick the start pose that has
+        minimal twist about axis (closest to identity), then return wrapped order.
+        """
+        def twist_deg(q, n_ref):
+            q = np.asarray(q, float)
+            if q[3] < 0:  # same hemisphere as identity
+                q = -q
+            vx, vy, vz, w = q
+            vdot = vx*n_ref[0] + vy*n_ref[1] + vz*n_ref[2]
+            ang = 2.0*np.arctan2(vdot, w)
+            a = float(np.degrees(ang) % 360.0)
+            # distance to 0/360
+            return min(a, 360.0 - a)
+
+        scores = [twist_deg(rotations[i][3], axis_dir) for i in indices]
+        start = int(np.argmin(scores))
+        return indices[start:] + indices[:start]
 
     def visualize_rotations(self, workpiece_name: str = None):
         """
@@ -355,12 +413,12 @@ class PoseVisualizer:
                             rotated_cyls.append((o_r, d_r))
                             unrotated_cyls.append((o, d))
 
-                        self._add_cylinder_axis(ax, unrotated_cyls, scale=0.10)
+                        self._add_cylinder_axis(ax, unrotated_cyls, scale=0.2, zorder=100)  # unrotated, for reference
 
                     legend_lines.append(f"Resting Face {face_id_i}")
-                    legend_lines.append(f"Quaternion [x,y,z,w] {np.round(quat, 4)}")
+                    legend_lines.append(f"Quaternion {np.round(quat, 4)}") # [x,y,z,w] 
 
-                ax.set_title("\n".join(legend_lines), fontsize=8)
+                ax.set_title("\n".join(legend_lines), fontsize=self.fs["title"])
                 fig.subplots_adjust(hspace=0.5)
                 self._add_plot_legend(ax)
                 plotted_rot_idxs.add(rot_idx)
@@ -368,7 +426,7 @@ class PoseVisualizer:
             for j in range(i + 1, len(axes)):
                 fig.delaxes(axes[j])
 
-            fig.suptitle(f"Unique and Symmetric Resting Poses of {workpiece_name} on Face {face_id}", fontsize=14)
+            #fig.suptitle(f"Unique and Symmetric Resting Poses of {workpiece_name} on Face {face_id}", fontsize=14)
             plt.tight_layout(rect=[0, 0, 1, 0.95])
             self._save_pose_figure(fig, workpiece_name, face_id)
 
