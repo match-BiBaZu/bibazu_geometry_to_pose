@@ -13,7 +13,7 @@ class CylinderHandler(PoseFinder):
         2 -> non-wobbly cylinder pose (axis ~ ±Y or ±Z)
     """
 
-    def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-5, rotation_steps: int = 12, wobble_angle: float = 2.0):
+    def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-5, rotation_steps: int = 12, wobble_angle: float = 2.0, axis_based_cylinder_check: int = 1):
 
         super().__init__(convex_hull_obj_file, self_obj_file, tolerance)
 
@@ -23,6 +23,8 @@ class CylinderHandler(PoseFinder):
         self.wobble_tolerance = 2 * np.sin((wobble_angle * np.pi) / 360)
         # some extra values to twiddle to get the poses resting on 'cone features' working        
         self.plane_alignment_band = getattr(self, 'plane_alignment_band', 10.0) * self.wobble_tolerance
+        # cylinder classification method switch
+        self.axis_based_cylinder_check = axis_based_cylinder_check
 
     # ---------- helper methods ----------
 
@@ -123,9 +125,54 @@ class CylinderHandler(PoseFinder):
             if np.linalg.norm(d2 - n_ref) < self.wobble_tolerance:
                 out.append((o, d2, r))
         return out
+    
+    def _group_coaxial_axes(self, aligned_axes):
+        """
+        Groups axes that are approximately coaxial (same or opposite direction, collinear origins).
+        Returns a list of group IDs per axis (e.g. [0, 0, 1]).
+        """
+        if not aligned_axes:
+            return []
 
-    def _two_on_same_axis(self, verts, axis):
-        """≥2 verts at the radius of a single axis (band = 10 * tolerance * |r|)."""
+        tol = self.wobble_tolerance
+        n = len(aligned_axes)
+        group_ids = [-1] * n
+        next_group = 0
+
+        for i in range(n):
+            if group_ids[i] != -1:
+                continue  # already assigned
+
+            # Start a new group for axis i
+            oi, di, _ = aligned_axes[i]
+            di = di / np.linalg.norm(di)
+            group_ids[i] = next_group
+
+            for j in range(i + 1, n):
+                if group_ids[j] != -1:
+                    continue
+
+                oj, dj, _ = aligned_axes[j]
+                dj = dj / np.linalg.norm(dj)
+
+                # directions aligned or opposite
+                if min(np.linalg.norm(di - dj), np.linalg.norm(di + dj)) > tol:
+                    continue
+
+                # check if oj lies on line through oi in direction di
+                v = oj - oi
+                projection = np.dot(v, di) * di
+                residual = v - projection
+                if np.linalg.norm(residual) <= tol:
+                    group_ids[j] = next_group
+
+            next_group += 1
+
+        return group_ids
+
+
+    def _is_at_cylinder_radius(self, verts, axis, coaxial_radii):
+        """all verts at the radius of a single axis (band = 10 * tolerance * |r|)."""
         (o, d, r) = axis
         rad_cnt = 0
 
@@ -135,14 +182,42 @@ class CylinderHandler(PoseFinder):
             return False
         
         for p in verts:
-                if abs(self._line_dist_perp(p, o, d) - r) <= band:
-                    rad_cnt += 1
+            dist = self._line_dist_perp(p, o, d)
+            # Check if vertex matches the primary radius
+            if abs(dist - r) <= band:
+                rad_cnt += 1
+            # Also check against any coaxial radii
+            else:
+                for coax_r in coaxial_radii:
+                    band_coax = 10.0 * float(self.tolerance) * abs(coax_r)
+                    if abs(dist - coax_r) <= band_coax:
+                        rad_cnt += 1
+                        break
         print(f"Axis check  rad_cnt={rad_cnt}, total verts={len(verts)}")
 
         return rad_cnt == len(verts) 
+    
+    def _is_at_cylinder_radius_perpendicular(self, plane_axis, axis_origin, radius):
+        """
+        check if the axis origin is perpedicularly radius away from the plane defined by the contact vertices)
+        """
+
+        #always return true if axis based cylinder check is enabled
+        if self.axis_based_cylinder_check == 1:
+            return True
+
+        band = 500.0 * float(self.tolerance) * abs(radius)
+
+        dist_to_plane = abs(plane_axis - axis_origin)
+        
+        print(f"Axis origin check distance to plane={dist_to_plane}, radius={radius}, band={band}")
+
+        return abs(dist_to_plane - radius) <= band
+
+            
 
     def _get_aligned_cylinder(self, idx, n_ref, rotations, cylinder_axis_parameters,cylinder_alignment_type=0):
-        """Return radius, direction, and origin of ANY aligned axis with ≥2 verts at its radius (base OR back)."""
+        """Return radius, direction, and origin of ANY aligned axis with base or back plate at its radius."""
         old_id, face_id, edge_id, q = rotations[idx]
         rot = R.from_quat(q)
         T = np.eye(4)
@@ -152,25 +227,29 @@ class CylinderHandler(PoseFinder):
         baseV, backV = self._resting_sets(m)
         axes = self._extract_axes_with_radius(cylinder_axis_parameters[idx])
         aligned = self._axes_aligned(axes, n_ref)
+        group_ids = self._group_coaxial_axes(aligned)
+
         if not aligned:
             return 0.0, None, None
-        for ax in aligned:
+        for i, ax in enumerate(aligned):
             print(f"Checking axis with radius {ax[2]} for pose {idx}...")
-            if self._two_on_same_axis(baseV, ax):
-                if self._two_on_same_axis(backV, ax):
+            #find list of radii for coaxial axes, specifically for workpieces such as kk1a where there are multiple coaxial cylinders
+            coaxial_radii = [aligned[j][2] for j in range(len(aligned)) if group_ids[j] == group_ids[i]]
+            if self._is_at_cylinder_radius(baseV, ax, coaxial_radii) and self._is_at_cylinder_radius_perpendicular(baseV[0][2], ax[0][2], ax[2]):
+                if self._is_at_cylinder_radius(backV, ax, coaxial_radii) and self._is_at_cylinder_radius_perpendicular(backV[0][0], ax[0][0], ax[2]):
                     cylinder_alignment_type = 3 # full cylinder pose
                     print(f"Found full cylinder pose (3) for pose {idx} with radius {ax[2]}.")
                     origin, direction, radius = ax
                     return radius, direction, origin,cylinder_alignment_type
                 else:
-                    print(f"Found base cylinder pose (2) for pose {idx} with radius {ax[2]}.")
+                    print(f"Found back cylinder pose (2) for pose {idx} with radius {ax[2]}.")
                     cylinder_alignment_type = 2 # cylinder resting on back only
                     origin, direction, radius = ax
                     return radius, direction, origin,cylinder_alignment_type
             else:
-                
-                if self._two_on_same_axis(backV, ax):
-                    print(f"Found back cylinder pose (1) for pose {idx} with radius {ax[2]}.")
+
+                if self._is_at_cylinder_radius(backV, ax, coaxial_radii) and self._is_at_cylinder_radius_perpendicular(backV[0][0], ax[0][0], ax[2]):
+                    print(f"Found base cylinder pose (1) for pose {idx} with radius {ax[2]}.")
                     cylinder_alignment_type = 1 # cylinder resting on base only
                     origin, direction, radius = ax
                     return radius, direction, origin,cylinder_alignment_type
@@ -204,9 +283,8 @@ class CylinderHandler(PoseFinder):
             return False
 
         ey = np.array([0.0, 1.0, 0.0])
-        tol = float(self.wobble_tolerance)
         for (_, d, _r) in aligned:
-            if min(np.linalg.norm(d - ey), np.linalg.norm(d + ey)) < tol:
+            if min(np.linalg.norm(d - ey), np.linalg.norm(d + ey)) < self.wobble_tolerance*0.1:
                 return True
         return False
 
@@ -218,9 +296,8 @@ class CylinderHandler(PoseFinder):
             return False
 
         ez = np.array([0.0, 0.0, 1.0])
-        tol = float(self.wobble_tolerance)
         for (_, d, _r) in aligned:
-            if min(np.linalg.norm(d - ez), np.linalg.norm(d + ez)) < tol:
+            if min(np.linalg.norm(d - ez), np.linalg.norm(d + ez)) < self.wobble_tolerance*0.1:
                 return True
         return False
 
@@ -327,7 +404,6 @@ class CylinderHandler(PoseFinder):
                             else: 
                                 pose_types[i] = 0 # non cylinder pose 
                             continue 
-
                         pose_types[i] = 4 # wobbly cylinder pose
                         
                     else: # non cylinder pose 

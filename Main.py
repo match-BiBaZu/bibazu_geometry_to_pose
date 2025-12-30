@@ -44,23 +44,17 @@ workpiece_names = circular_workpiece_names
 #workpiece_names = ['Kf2a','Kl2a']
 #workpiece_names = ['Rl1a']
 
-# is the step file centered around its center of mass? 0 = no, 1 = yes
+# is the step file origin at the center of mass of it's convex hull? 0 = no, 1 = yes
 step_file_centered = 0
+
+# location of axes points or perpedicular origin distance based cylinder check switch (usually 1, except for kk2i which uses a crude distance check)
+axis_based_cylinder_check = 1  # 0 = off, 1 = on
 
 # Get the workpiece name you want to find poses for
 #workpiece_name = 'Teil_2'
 
 for workpiece_name in workpiece_names:
 
-    # Set is_step_file_centered to 2 if 'k' is detected in the first letter of the workpiece name, 1 if workpiece_name is 'Rl1a', else 0, it is a bit yucky but I cant be bothered centering all step files
-    #step_file_centered = (
-    #    1 if workpiece_name == 'Rl1a'
-    #    else 3 if workpiece_name == 'Kf2a'
-    #    else 4 if workpiece_name == 'Kl2a' 
-    #    else 5 if workpiece_name == 'Rf3a'
-    #    else 2 if workpiece_name[0].lower() == 'k'
-    #    else 0
-    #)
     #print(f"Processing workpiece: {workpiece_name}, is_step_file_centered: {step_file_centered}")    # Use the original STEP file to find the largest cylinder or circle edge
     step_find_all_cylinders(str(workpiece_path / (workpiece_name + '.STEP')), str(csv_path / (workpiece_name + '_cylinder_properties.csv')))
 
@@ -79,7 +73,12 @@ for workpiece_name in workpiece_names:
     # Find candidate rotations based on face normals and shadow edges
     candidate_rotations, xy_shadows, cylinder_axis_parameters = pose_finder.find_candidate_rotations_by_face_and_shadow_alignment()
 
-    cylinder_handler = CylinderHandler(str(workpiece_path / (workpiece_name + '_convex_hull.obj')), str(workpiece_path / (workpiece_name + '.obj')), 1e-5, 1, 10)
+    if workpiece_name == 'Kk2i':
+        axis_based_cylinder_check = 0  # crude perpendicular distance origin check for kk2i as its convex hull points are all a radius away from the cylinder axis
+    else:
+        axis_based_cylinder_check = 1  # normal axis based check for other workpieces
+
+    cylinder_handler = CylinderHandler(str(workpiece_path / (workpiece_name + '_convex_hull.obj')), str(workpiece_path / (workpiece_name + '.obj')), 1e-5, 1, 20, axis_based_cylinder_check)
 
     # Find and classify cylinder poses from the candidate rotations (if cylinders are detected in the workpiece)
     if cylinder_axis_parameters:

@@ -175,7 +175,7 @@ class PoseEliminator(PoseFinder):
         for index, face_id, edge_id, quat in self.stable_rotations:
             #print(f"Checking pose {index} for stability...")
             is_stable = self._is_stable_by_center_mass(quat)
-            if is_stable or self.pose_types[index] > 0: # keep all cylinder poses for now
+            if is_stable or self.pose_types[index] == 3: # keep back cylinder poses regardless of stability
                 #print(f"Pose {index} is stable.")
                 stable_rotations.append((pose_count, face_id, edge_id, quat))
                 stable_shadows.append(self.stable_shadows[index])
