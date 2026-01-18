@@ -8,6 +8,7 @@ import trimesh
 
 class PoseEliminator(PoseFinder):
     def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-5,
+                     stability_tolerance: float = 1e-3,
                      stable_rotations=None, stable_shadows=None, stable_axis_parameters=None,
                      pose_types=None, pose_cylinder_radius=None, pose_cylinder_axis_direction=None,
                      pose_cylinder_axis_origin=None, pose_cylinder_group=None):
@@ -26,8 +27,9 @@ class PoseEliminator(PoseFinder):
         self.pose_cylinder_axis_direction = pose_cylinder_axis_direction
         self.pose_cylinder_axis_origin = pose_cylinder_axis_origin
         self.pose_cylinder_group = pose_cylinder_group
+        self.stability_tolerance = stability_tolerance
 
-    def _is_stable_by_center_mass(self, rotation_vector: np.ndarray) -> bool:
+    def _is_stable_by_center_mass(self, rotation_vector: np.ndarray, index: int) -> bool:
         """
         Checks if the center_mass's (x, y) coordinates, after applying the given rotation,
         fall within the bounds of the resting plane (the face in contact with the ground).
@@ -53,12 +55,24 @@ class PoseEliminator(PoseFinder):
         # Project to XY and remove duplicates
         projected_points = np.unique(resting_vertices[:, :2], axis=0)
 
-        # Need at least 3 unique points
-        if projected_points.shape[0] < 3:
-            return False
-
         # Project center_mass to XY
         center_mass = rotated_mesh.center_mass[:2]
+
+        # Need at least 3 unique points
+        if projected_points.shape[0] < 3:
+            # Fallback: plot center mass + raw resting points anyway
+            ''' Plots for debugging 
+            plt.figure()
+            if projected_points.shape[0] > 0:
+                plt.scatter(*projected_points.T, c='k', label='Projected Vertices')
+            plt.plot(center_mass[0], center_mass[1], 'ro', label='Center of Mass')
+            plt.gca().set_aspect('equal')
+            plt.legend()
+            plt.title(f"Unstable (too few contact points) — pose {index}")
+            plt.savefig(f"unstable_pose_{index:03d}.png", dpi=150)
+            plt.close()
+            '''
+            return False
 
         # Use ConvexHull to get the 2D polygon of the merged resting faces
         hull = ConvexHull(projected_points)
@@ -67,19 +81,22 @@ class PoseEliminator(PoseFinder):
         # Point-in-polygon test using matplotlib.path
         path = Path(hull_points)
 
-        is_inside = path.contains_point(center_mass, radius=self.tolerance)
+        is_inside = path.contains_point(center_mass, radius=self.stability_tolerance) # small negative radius to be stricter on stability and make sure the center of mass is well within the support polygon (fixes Rl4i behaviour)
+        print(f"radius: {self.stability_tolerance}")
         #print(f"Center of mass {center_mass}.")
 
         # Diagnostic plot (always shown)
-        #plt.figure()
-        #plt.plot(*hull_points.T, 'k--', lw=1, label='Support Polygon')
-        #plt.plot(center_mass[0], center_mass[1],
-        #        'go' if is_inside else 'ro', label='Center of Mass')
-        #plt.gca().set_aspect('equal')
-        #plt.legend()
-        #plt.title(f"Stability Check: {'Stable' if is_inside else 'Unstable'}")
-        #plt.show()
-
+        ''' Plots for debugging
+        plt.figure()
+        plt.plot(*hull_points.T, 'k--', lw=1, label='Support Polygon')
+        plt.plot(center_mass[0], center_mass[1],
+                'go' if is_inside else 'ro', label='Center of Mass')
+        plt.gca().set_aspect('equal')
+        plt.legend()
+        plt.title(f"Stability Check: {'Stable' if is_inside else 'Unstable'} pose_number {index}")
+        plt.savefig(f"stability_check_{index:03d}.png", dpi=150)
+        plt.close()
+        '''
         return is_inside
     
     # use a tolerance-aware modulo check
@@ -173,9 +190,10 @@ class PoseEliminator(PoseFinder):
         pose_count = 0
 
         for index, face_id, edge_id, quat in self.stable_rotations:
-            #print(f"Checking pose {index} for stability...")
-            is_stable = self._is_stable_by_center_mass(quat)
-            if is_stable or self.pose_types[index] == 3: # keep back cylinder poses regardless of stability
+            print(f"Checking pose {index} for stability...")
+            is_stable = self._is_stable_by_center_mass(quat, index)
+            print(f"Pose {index} stability: {is_stable}")
+            if is_stable:
                 #print(f"Pose {index} is stable.")
                 stable_rotations.append((pose_count, face_id, edge_id, quat))
                 stable_shadows.append(self.stable_shadows[index])
@@ -185,7 +203,7 @@ class PoseEliminator(PoseFinder):
                 filtered_cylinder_axis_direction.append(self.pose_cylinder_axis_direction[index])
                 filtered_cylinder_axis_origin.append(self.pose_cylinder_axis_origin[index])
                 filtered_cylinder_group.append(self.pose_cylinder_group[index])
-                pose_count += 1
+            pose_count += 1
         
         self.stable_rotations = stable_rotations
         self.stable_shadows = stable_shadows

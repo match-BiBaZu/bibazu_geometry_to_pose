@@ -38,11 +38,11 @@ circular_workpiece_names = ['Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl
 workpiece_names = circular_workpiece_names
 #workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk4i','Dl1a','Dl4a','Qf1i','Qf4i','Qk2i','Qk4a','Ql2a','Rf2i','Rf4i','Rk2i','Rk4i','Rl2i','Rl3a','Qk1a','Ql1i','Ql4i','Rf1a','Rf3a','Rk1a','Rk3a','Rl4i']
 #workpiece_names = ['Kf4i']
-#workpiece_names = ['Kk2i']
+#workpiece_names = ['Kk1a']
 #workpiece_names = ['Df4a','Df2i']
 #workpiece_names = ['Rf3a']
 #workpiece_names = ['Kf2a','Kl2a']
-#workpiece_names = ['Rl1a']
+#workpiece_names = ['Rl1a', 'Rf3a']
 
 # is the step file origin at the center of mass of it's convex hull? 0 = no, 1 = yes
 step_file_centered = 0
@@ -90,11 +90,19 @@ for workpiece_name in workpiece_names:
         pose_cylinder_axis_origin = [[0,0,0]]  * len(candidate_rotations)
         pose_cylinder_group = [0] * len(candidate_rotations)
 
+    if workpiece_name == 'Rl1a':
+        eliminator_tolerance = 1e-2  # looser tolerance for rounded workpieces
+        eliminator_stability_tolerance = -2
+    else:
+        eliminator_tolerance = 1e-1
+        eliminator_stability_tolerance = 2
+
     # Initialize the PoseEliminator with the convex hull OBJ file and self OBJ file
     pose_eliminator = PoseEliminator(
         str(workpiece_path / (workpiece_name + '_convex_hull.obj')),
         str(workpiece_path / (workpiece_name + '.obj')),
-        tolerance=1e-5,
+        tolerance=eliminator_tolerance, # tolerance needs to be a bit looser for the cylinder workpieces when doing stability check
+        stability_tolerance=eliminator_stability_tolerance,
         stable_rotations=candidate_rotations,
         stable_shadows=xy_shadows,
         stable_axis_parameters=cylinder_axis_parameters,
@@ -108,14 +116,14 @@ for workpiece_name in workpiece_names:
     # Remove duplicate rotations (if any) from the candidate rotations
     pose_eliminator.remove_duplicates()
 
-    # Remove rotations that are not stable enough by the crude centroid over resting plane detection
-    pose_eliminator.remove_unstable_poses()
-
     # Remove cylinder poses based on alignment criteria
     pose_eliminator.remove_cylinder_poses()
 
+    # Remove rotations that are not stable enough by the crude centroid over resting plane detection
+    pose_eliminator.remove_unstable_poses()
+
     # Find unique poses by considering symmetry with an adjustable tolerance, this is set for workpieces with feature sizes between 0.1 and 0.03 cm (I still think this is programmed weirdly)
-    # symmetrically_unique_rotations = pose_finder.symmetry_handler(candidate_rotations,4)
+    #symmetrically_unique_rotations = pose_finder.symmetry_handler(candidate_rotations,4)
 
     pose_finder.write_candidate_rotations_to_file(pose_eliminator.get_stable_rotations(), 
                                                   pose_eliminator.get_pose_types(),
