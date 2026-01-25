@@ -51,7 +51,7 @@ class PoseFinder:
         if is_workpiece_centered == 0:
             # Only subtract centroid from x and y, keep z unchanged
             self._load_cylinder_from_csv(centroid)
-        else:  # specially for Rl1a as it's stl was created with a shifted center
+        else:  
             self._load_cylinder_from_csv()
 
         # Check if at least 3 vertices align with the lowest z-axis (resting face)
@@ -426,6 +426,7 @@ class PoseFinder:
                                           cylinder_axis_origin: list[list[tuple]], 
                                           cylinder_axis_direction: list[list[tuple]],
                                           cylinder_group_ids: list[list[int]],
+                                          output_cylinder_features: bool,
                                           output_file: str):
         """
         Writes the candidate rotations to a file in a readable format.
@@ -437,19 +438,26 @@ class PoseFinder:
         :param output_file: Path to the output file.
         """
         with open(output_file, 'w') as f:
-            f.write("PoseID,FaceID,EdgeID,PoseType,Cylinder_Radius,CylinderGroupID,AxisOriginX,AxisOriginY,AxisOriginZ,AxisDirX,AxisDirY,AxisDirZ,QuatX,QuatY,QuatZ,QuatW\n")
+            if output_cylinder_features:
+                f.write("PoseID,FaceID,EdgeID,PoseType,Cylinder_Radius,CylinderGroupID,AxisOriginX,AxisOriginY,AxisOriginZ,AxisDirX,AxisDirY,AxisDirZ,QuatX,QuatY,QuatZ,QuatW\n")
+            else:
+                f.write("PoseID,FaceID,EdgeID,PoseType,QuatX,QuatY,QuatZ,QuatW\n")
             for i, rotation in enumerate(candidate_rotations):
                 quat = rotation[3]
                 #origin = cylinder_axis_origin[i] if i < len(cylinder_axis_origin) else (0.0, 0.0, 0.0)
                 #direction = cylinder_axis_direction[i] if i < len(cylinder_axis_direction) else (0.0, 0.0, 1.0)
                 origin = cylinder_axis_origin[i]
                 direction = cylinder_axis_direction[i]
-
-                f.write(f"{rotation[0]},{rotation[1]},{rotation[2]},"
-                        f"{pose_types[i]},{cylinder_radius[i]},{cylinder_group_ids[i]},"
-                        f"{origin[0]},{origin[1]},{origin[2]},"
-                        f"{direction[0]},{direction[1]},{direction[2]},"
-                        f"{quat[0]},{quat[1]},{quat[2]},{quat[3]}\n")
+                if output_cylinder_features:
+                    f.write(f"{rotation[0]},{rotation[1]},{rotation[2]},"
+                            f"{pose_types[i]},{cylinder_radius[i]},{cylinder_group_ids[i]},"
+                            f"{origin[0]},{origin[1]},{origin[2]},"
+                            f"{direction[0]},{direction[1]},{direction[2]},"
+                            f"{quat[0]},{quat[1]},{quat[2]},{quat[3]}\n")
+                else:
+                    f.write(f"{rotation[0]},{rotation[1]},{rotation[2]},"
+                            f"{pose_types[i]},"
+                            f"{quat[0]},{quat[1]},{quat[2]},{quat[3]}\n")
 
     def write_pose_shadows_to_file(
         self,

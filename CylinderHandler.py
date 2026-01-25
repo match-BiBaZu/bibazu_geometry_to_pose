@@ -284,7 +284,7 @@ class CylinderHandler(PoseFinder):
 
         ey = np.array([0.0, 1.0, 0.0])
         for (_, d, _r) in aligned:
-            if min(np.linalg.norm(d - ey), np.linalg.norm(d + ey)) < self.wobble_tolerance*0.25: #special value for Kk1a
+            if min(np.linalg.norm(d - ey), np.linalg.norm(d + ey)) < self.wobble_tolerance*10: #special value for Kk1a
                 return True
         return False
 

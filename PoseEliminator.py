@@ -29,7 +29,7 @@ class PoseEliminator(PoseFinder):
         self.pose_cylinder_group = pose_cylinder_group
         self.stability_tolerance = stability_tolerance
 
-    def _is_stable_by_center_mass(self, rotation_vector: np.ndarray, index: int) -> bool:
+    def _is_stable_by_center_mass_old(self, rotation_vector: np.ndarray, index: int) -> bool:
         """
         Checks if the center_mass's (x, y) coordinates, after applying the given rotation,
         fall within the bounds of the resting plane (the face in contact with the ground).
@@ -98,6 +98,97 @@ class PoseEliminator(PoseFinder):
         plt.close()
         '''
         return is_inside
+
+    def _is_stable_by_center_mass(self, rotation_vector: np.ndarray, index: int,
+                              alpha_tilt: float, beta_tilt: float) -> bool:
+        """
+        Checks if the pose is stable on a tilted XY plane defined by alpha and beta tilt angles.
+        A pose is considered stable if:
+        - The center of mass projects inside the support polygon (contact points at min-Z)
+        - The CoM's Y-coordinate lies within the Y-span (min–max) of the contact vertices
+
+        Tilts:
+        alpha_tilt – CCW tilt (deg) around X-axis (front-back)
+        beta_tilt  – CCW tilt (deg) around Y-axis (left-right)
+        """
+
+        # Step 1: Apply pose rotation
+        rotated_mesh = self.mesh.copy()
+        rotation = R.from_quat(rotation_vector)
+        T_pose = np.eye(4)
+        T_pose[:3, :3] = rotation.as_matrix()
+        rotated_mesh.apply_transform(T_pose)
+
+        # Step 2: Identify contact vertices at bottom plane (min-Z)
+        verts = rotated_mesh.vertices
+        z_coords = verts[:, 2]
+        min_z = np.min(z_coords)
+        contact_idx = np.where(np.abs(z_coords - min_z) < self.tolerance)[0]
+        contact_vertices = verts[contact_idx]
+
+        if len(contact_vertices) < 3:
+            return False
+
+        # Step 3: Tilt the system so that the slide plane becomes horizontal
+        alpha = np.radians(alpha_tilt)
+        beta = np.radians(beta_tilt)
+
+        R_tilt = R.from_euler('xy', [-alpha, -beta]).as_matrix()  # inverse tilt
+        contact_tilted = contact_vertices @ R_tilt.T
+        com_tilted = rotated_mesh.center_mass @ R_tilt.T
+
+        # Step 4: Project to XY plane of tilted frame
+        contact_2d = np.unique(contact_tilted[:, :2], axis=0)
+        com_xy = com_tilted[:2]
+        com_y = com_xy[1]  # for Y-span check
+
+        if contact_2d.shape[0] < 3:
+            return False
+
+        # Step 5: Convex hull + polygon check
+        try:
+            hull = ConvexHull(contact_2d)
+            hull_points = contact_2d[hull.vertices]
+        except:
+            return False
+
+        path = Path(hull_points)
+        inside_polygon = path.contains_point(com_xy, radius=self.stability_tolerance)
+
+        # Step 6: Y-span check at the back (min-X) face
+        x_coords = verts[:, 0]
+        min_x = np.min(x_coords)
+        back_idx = np.where(np.abs(x_coords - min_x) < self.tolerance)[0]
+        back_vertices = verts[back_idx]
+
+        if len(back_vertices) < 2:
+            inside_y_span = False
+        else:
+            back_tilted = back_vertices @ R_tilt.T
+            y_coords_back = back_tilted[:, 1]
+            y_min, y_max = np.min(y_coords_back), np.max(y_coords_back)
+            com_y = com_tilted[1]
+
+            inside_y_span = (y_min - self.tolerance) <= com_y <= (y_max + self.tolerance)
+        print('y min:', y_min, 'y max:', y_max, 'com y:', com_y)
+
+        # Optional debug
+        '''
+        if not (inside_polygon and inside_y_span):
+            plt.figure()
+            plt.plot(*hull_points.T, 'k--', lw=1, label='Support Polygon')
+            plt.plot(com_xy[0], com_xy[1], 'ro', label='Center of Mass')
+            plt.axhline(y_min, color='gray', linestyle='--', lw=0.5)
+            plt.axhline(y_max, color='gray', linestyle='--', lw=0.5)
+            plt.gca().set_aspect('equal')
+            plt.legend()
+            plt.title(f"Unstable Pose {index} – α={alpha_tilt}°, β={beta_tilt}°")
+            plt.savefig(f"stability_check_{index:03d}.png", dpi=150)
+            plt.close()
+        '''
+
+        return inside_polygon and inside_y_span
+
     
     # use a tolerance-aware modulo check
     def _is_aligned(self, value: float, step: float, tol: float) -> bool:
@@ -173,7 +264,7 @@ class PoseEliminator(PoseFinder):
         self.pose_cylinder_group = filtered_cylinder_group
     
     
-    def remove_unstable_poses(self):
+    def remove_unstable_poses(self, alpha_tilt, beta_tilt):
         """
         Removes unstable poses based on the convex hull.
         :param rotations: List of tuples (pose, face_id, shadow_id, valid rotation vector).
@@ -191,9 +282,10 @@ class PoseEliminator(PoseFinder):
 
         for index, face_id, edge_id, quat in self.stable_rotations:
             print(f"Checking pose {index} for stability...")
-            is_stable = self._is_stable_by_center_mass(quat, index)
-            print(f"Pose {index} stability: {is_stable}")
-            if is_stable:
+            is_stable_flat = self._is_stable_by_center_mass(quat, index, 0, 0)
+            is_stable_tilted = self._is_stable_by_center_mass(quat, index, alpha_tilt, beta_tilt)
+            print(f"Pose {index} stability: {is_stable_flat} and {is_stable_tilted}")
+            if is_stable_flat and is_stable_tilted:
                 #print(f"Pose {index} is stable.")
                 stable_rotations.append((pose_count, face_id, edge_id, quat))
                 stable_shadows.append(self.stable_shadows[index])
