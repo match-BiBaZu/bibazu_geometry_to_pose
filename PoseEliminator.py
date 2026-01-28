@@ -86,7 +86,7 @@ class PoseEliminator(PoseFinder):
         #print(f"Center of mass {center_mass}.")
 
         # Diagnostic plot (always shown)
-        ''' Plots for debugging '''
+        ''' Plots for debugging
         if is_inside:
             plt.figure()
             plt.plot(*hull_points.T, 'k--', lw=1, label='Support Polygon')
@@ -97,7 +97,7 @@ class PoseEliminator(PoseFinder):
             plt.title(f"Stability Check: {'Stable' if is_inside else 'Unstable'} pose_number {index}")
             plt.savefig(f"stability_check_{index:03d}.png", dpi=150)
             plt.close()
-
+        '''
         return is_inside
 
     def _is_stable_by_center_mass(self, rotation_vector: np.ndarray, index: int,
@@ -155,7 +155,7 @@ class PoseEliminator(PoseFinder):
             hull_points = np.vstack([hull_points, hull_points[0]])
         path = Path(hull_points)
         if self.pose_types[index] == 3:
-           inside_polygon = path.contains_point(com_xy, radius=2)#looser tolerance for those pesky rolling cylinder poses
+           inside_polygon = path.contains_point(com_xy, radius=0)#looser tolerance for those pesky rolling cylinder poses
            print ('self stability tol:', -self.stability_tolerance)
         else:
             inside_polygon = path.contains_point(com_xy, radius=self.stability_tolerance)
@@ -179,7 +179,7 @@ class PoseEliminator(PoseFinder):
         print('y min:', y_min, 'y max:', y_max, 'com y:', com_y)
 
         # Optional debug
-        
+        '''
         if (inside_polygon and inside_y_span):
             plt.figure()
             plt.plot(*hull_points.T, 'k--', lw=1, label='Support Polygon')
@@ -191,7 +191,7 @@ class PoseEliminator(PoseFinder):
             plt.title(f"Stable Pose {index} – α={alpha_tilt}°")
             plt.savefig(f"stability_check_{index:03d}.png", dpi=150)
             plt.close()
-        
+        '''
 
         return inside_polygon and inside_y_span
 

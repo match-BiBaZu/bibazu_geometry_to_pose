@@ -36,14 +36,14 @@ circular_workpiece_names = ['Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl
 #workpiece_names =['Rl2i','Df2i','Dk4i','Dl4a','Qk4a','Rf4i','Rk4i','Rf2i','Dl2i']
 #workpiece_names = ['Kl4i','Kl1i','Kl2a','Rl1a']
 #workpiece_names = ['Kk2i','Kl2a','Kf2a']
-#workpiece_names = circular_workpiece_names
+workpiece_names = circular_workpiece_names
 #workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk4i','Dl1a','Dl4a','Qf1i','Qf4i','Qk2i','Qk4a','Ql2a','Rf2i','Rf4i','Rk2i','Rk4i','Rl2i','Rl3a','Qk1a','Ql1i','Ql4i','Rf1a','Rf3a','Rk1a','Rk3a','Rl4i']
 #workpiece_names = ['Kf4i']
 #workpiece_names = ['Kk1a']
 #workpiece_names = ['Df4a','Df2i']
 #workpiece_names = ['Rf3a']
 #workpiece_names = ['Kf2a','Kl2a']
-workpiece_names = ['Kl4i','Kk4a','Kl2a','Kl1i']
+#workpiece_names = ['Kl4i','Kk4a','Kl2a','Kl1i']
 # is the step file origin at the center of mass of its convex hull? 0 = no, 1 = yes, when no make sure the step files origin is at the corner of a workpiece
 step_file_centered = 0
 

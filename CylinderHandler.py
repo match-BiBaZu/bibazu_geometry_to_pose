@@ -212,9 +212,7 @@ class CylinderHandler(PoseFinder):
         
         print(f"Axis origin check distance to plane={dist_to_plane}, radius={radius}, band={band}")
 
-        return abs(dist_to_plane - radius) <= band
-
-            
+        return abs(dist_to_plane - radius) <= band       
 
     def _get_aligned_cylinder(self, idx, n_ref, rotations, cylinder_axis_parameters,cylinder_alignment_type=0):
         """Return radius, direction, and origin of ANY aligned axis with base or back plate at its radius."""
@@ -300,114 +298,134 @@ class CylinderHandler(PoseFinder):
             if min(np.linalg.norm(d - ez), np.linalg.norm(d + ez)) < self.wobble_tolerance*0.1:
                 return True
         return False
-
-    def _find_secondary_poses(self, pose_types, cylinder_group):
+     
+    # ---------- main method ----------
+    def find_cylinder_poses(self,
+                            rotations,
+                            xy_shadows,
+                            cylinder_axis_parameters):
         """
-        For each cylinder group:
-        - keep the first pose's type as-is (2, 3, or 4),
-        - set all other poses in that group to 1 (secondary poses).
+        Classify each pose as cylinder-related or not.
+
+        Returns:
+            rotations, xy_shadows, cylinder_axis_parameters,
+            pose_types (list[int]), cylinder_radius (list[float]),
+            cylinder_axis_direction (list[np.ndarray]),
+            cylinder_axis_origin (list[np.ndarray]),
+            cylinder_group (list[int])
         """
-        pose_types_arr = np.asarray(pose_types)
-        group_arr = np.asarray(cylinder_group)
+        if not rotations:
+            return [], [], [], [], [], [], [], []
 
-        # groups with cylinder poses (group > 0 and pose_type != 0)
-        mask = (group_arr > 0) & (pose_types_arr != 0)
-        if not np.any(mask):
-            return  # nothing to do
+        n_poses = len(rotations)
+        pose_types = [0] * n_poses
+        cylinder_radius = [0] * n_poses
+        cylinder_axis_direction = [[0, 0, 0]] * n_poses
+        cylinder_axis_origin = [[0, 0, 1]] * n_poses
+        cylinder_group = [0] * n_poses
 
-        valid_groups = group_arr[mask]
-        unique_groups = np.unique(valid_groups)
+        groups, group_dirs = self._group_by_first_dir(cylinder_axis_parameters)
+        print(f"Classifying {n_poses} poses in {len(groups)} direction groups.")
 
-        for g in unique_groups:
-            # all indices in this group with non-zero pose type
-            idxs = np.where((group_arr == g) & (pose_types_arr != 0))[0]
-            if idxs.size <= 1:
+        for g, idxs in enumerate(groups):
+            n_group = group_dirs[g]
+            if n_group is None:
                 continue
 
-            idxs_sorted = np.sort(idxs)
-            primary = idxs_sorted[0]       # keep type of this pose
-            # all others become type 1
-            secondaries = idxs_sorted[1:]
-            pose_types_arr[secondaries] = 1 # assign secondary poses to a 1 (these poses wont be displayed)
+            n_group = n_group / (np.linalg.norm(n_group) or 1.0)
+            candidates_base, candidates_side, candidate_all = [], [], []
 
-        # write back into the original list
-        pose_types[:] = pose_types_arr.tolist()
+            for i in idxs:
+                radius, direction, origin, cylinder_alignment_type = self._get_aligned_cylinder(
+                    i, n_group, rotations, cylinder_axis_parameters, 0)
 
-            
-    # ---------- main method ----------
-    def find_cylinder_poses( self, rotations, # list[(old_id, face_id, edge_id, quat[x,y,z,w])] 
-        xy_shadows, # list[np.ndarray] (passed through unchanged) 
-        cylinder_axis_parameters, # list[list[dict or tuple]] 
-        ): 
-        """ Classify each pose instead of filtering. 
-            Returns: rotations, xy_shadows, cylinder_axis_parameters, pose_types, # list[int] cylinder_radius # list[int] 
-            """ 
-        if not rotations: 
-            return [], [], [], [], [] 
-        
-        pose_types = [0] * len(rotations) # default: non-cylinder 
-        cylinder_radius = [0] * len(rotations) 
-        cylinder_axis_direction = [[0,0,0]] * len(rotations) 
-        cylinder_axis_origin = [[0,0,1]] * len(rotations) 
-        cylinder_group = [0] * len(rotations) 
-        found_cylinder_per_group = {} # track which groups already have a cylinder 
-        cylinder_alignment_type = 0 
-        
-        groups, group_dirs = self._group_by_first_dir(cylinder_axis_parameters) 
-        print(f"Classifying {len(rotations)} poses in {len(groups)} direction groups.") 
-        
-        for g, idxs in enumerate(groups): 
-                n_group = group_dirs[g] 
-                if n_group is None: 
-                    # no axis info -> leave as 0 (non-cylinder), id = 0 
-                    continue 
-                
-                n_group = n_group / (np.linalg.norm(n_group) or 1.0) 
-                
-                found_cylinder_per_group[g] = False 
-                
-                for i in idxs: 
-                    radius, direction, origin, cylinder_alignment_type = self._get_aligned_cylinder(i, n_group, rotations, cylinder_axis_parameters,cylinder_alignment_type) 
-                    
-                    
-                    if cylinder_alignment_type != 0:
-                        
-                        if found_cylinder_per_group[g]:
-                            pose_types[i] = 1 # another pose from same cylinder group 
-                            continue 
-                        
-                        
-                        if self._pose_has_pure_z(i, n_group, cylinder_axis_parameters): 
-                            if cylinder_alignment_type == 3 or cylinder_alignment_type == 1: 
-                                pose_types[i] = 2 # resting on base only 
+                if cylinder_alignment_type == 0:
+                    pose_types[i] = 0  # non-cylinder pose
+                    cylinder_radius[i] = 0.0
+                    cylinder_axis_direction[i] = [0, 0, 0]
+                    continue
+                else:
+                    if self._pose_has_pure_z(i, n_group, cylinder_axis_parameters):
+                        if cylinder_alignment_type in (3, 1):
+                            candidates_base.append((i, rotations[i], direction, origin, radius))
+                            candidate_all.append(i)
+                            pose_types[i] = 1  # mark as repeat cylinder pose to seperate from non cylinder pose
+                        continue
 
-                                #cylinder pose 
-                                cylinder_radius[i] = radius 
-                                cylinder_axis_direction[i] = direction 
-                                cylinder_axis_origin[i] = origin 
-                                cylinder_group[i] = g 
-                                found_cylinder_per_group[g] = True 
-                            else: 
-                                pose_types[i] = 0 # non cylinder pose 
-                            continue 
-                        
-                        if self._pose_has_pure_y(i, n_group, cylinder_axis_parameters): 
-                            if cylinder_alignment_type == 3 or cylinder_alignment_type == 2: 
-                                pose_types[i] = 3 # non wobbly cylinder pose 
+                    if self._pose_has_pure_y(i, n_group, cylinder_axis_parameters):
+                        if cylinder_alignment_type in (3, 2):
+                            candidates_side.append((i, rotations[i], direction, origin, radius))
+                            candidate_all.append(i)
+                            pose_types[i] = 1  # mark as repeat cylinder pose to seperate from non cylinder pose
+                        continue
 
-                                #cylinder pose 
-                                cylinder_radius[i] = radius 
-                                cylinder_axis_direction[i] = direction 
-                                cylinder_axis_origin[i] = origin 
-                                cylinder_group[i] = g 
-                                found_cylinder_per_group[g] = True 
-                            else: 
-                                pose_types[i] = 0 # non cylinder pose 
-                            continue 
-                        pose_types[i] = 4 # wobbly cylinder pose
-                        
-                    else: # non cylinder pose 
-                        pose_types[i] = 0 
-                        cylinder_radius[i] = 0 
-                        
-        return rotations, xy_shadows, cylinder_axis_parameters, pose_types, cylinder_radius, cylinder_axis_direction, cylinder_axis_origin, cylinder_group
+                    pose_types[i] = 4  # wobbly cylinder pose
+                    cylinder_radius[i] = radius
+                    cylinder_axis_direction[i] = direction
+                    cylinder_axis_origin[i] = origin
+                    cylinder_group[i] = g
+                    candidate_all.append(i)
+
+
+            # Assign lowest-z and highest-z pose from candidates_side as type 3
+            self._assign_aligned_z_pose(candidates_side, pose_types, cylinder_axis_direction,
+                                    cylinder_axis_origin, cylinder_radius, cylinder_group, group_id=g)
+
+            # Assign lowest-y and highest-y pose from candidates_base as type 2
+            self._assign_aligned_y_pose(candidates_base, pose_types, cylinder_axis_direction,
+                                    cylinder_axis_origin, cylinder_radius, cylinder_group, group_id=g)
+
+        return (rotations, xy_shadows, cylinder_axis_parameters,
+                pose_types, cylinder_radius,
+                cylinder_axis_direction, cylinder_axis_origin, cylinder_group)
+
+    def _assign_aligned_z_pose(self, candidates, pose_types, dirs, origins, radii, groups, group_id):
+        if not candidates:
+            return
+
+        def get_z(candidate):
+            idx, rot, *_ = candidate
+            q = rot[3]
+            Rmat = R.from_quat(q).as_matrix()
+            T = np.eye(4)
+            T[:3, :3] = Rmat
+            m = self.mesh.copy()
+            m.apply_transform(T)
+            return m.center_mass[2]
+
+        idx_min = min(candidates, key=get_z)[0]
+        idx_max = max(candidates, key=get_z)[0]
+
+        for idx, _, d, o, r in candidates:
+            if idx == idx_min or idx == idx_max:
+                pose_types[idx] = 3
+                dirs[idx] = d
+                origins[idx] = o
+                radii[idx] = r
+                groups[idx] = group_id
+
+
+    def _assign_aligned_y_pose(self, candidates, pose_types, dirs, origins, radii, groups, group_id):
+        if not candidates:
+            return
+
+        def get_y(candidate):
+            idx, rot, *_ = candidate
+            q = rot[3]
+            Rmat = R.from_quat(q).as_matrix()
+            T = np.eye(4)
+            T[:3, :3] = Rmat
+            m = self.mesh.copy()
+            m.apply_transform(T)
+            return m.center_mass[1]
+
+        idx_min = min(candidates, key=get_y)[0]
+        idx_max = max(candidates, key=get_y)[0]
+
+        for idx, _, d, o, r in candidates:
+            if idx == idx_min or idx == idx_max:
+                pose_types[idx] = 2
+                dirs[idx] = d
+                origins[idx] = o
+                radii[idx] = r
+                groups[idx] = group_id
