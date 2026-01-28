@@ -81,26 +81,27 @@ class PoseEliminator(PoseFinder):
         # Point-in-polygon test using matplotlib.path
         path = Path(hull_points)
 
-        is_inside = path.contains_point(center_mass, radius=self.stability_tolerance) # small negative radius to be stricter on stability and make sure the center of mass is well within the support polygon (fixes Rl4i behaviour)
+        is_inside = path.contains_point(center_mass, radius=0) # small negative radius to be stricter on stability and make sure the center of mass is well within the support polygon (fixes Rl4i behaviour)
         print(f"radius: {self.stability_tolerance}")
         #print(f"Center of mass {center_mass}.")
 
         # Diagnostic plot (always shown)
-        ''' Plots for debugging
-        plt.figure()
-        plt.plot(*hull_points.T, 'k--', lw=1, label='Support Polygon')
-        plt.plot(center_mass[0], center_mass[1],
-                'go' if is_inside else 'ro', label='Center of Mass')
-        plt.gca().set_aspect('equal')
-        plt.legend()
-        plt.title(f"Stability Check: {'Stable' if is_inside else 'Unstable'} pose_number {index}")
-        plt.savefig(f"stability_check_{index:03d}.png", dpi=150)
-        plt.close()
-        '''
+        ''' Plots for debugging '''
+        if is_inside:
+            plt.figure()
+            plt.plot(*hull_points.T, 'k--', lw=1, label='Support Polygon')
+            plt.plot(center_mass[0], center_mass[1],
+                    'go' if is_inside else 'ro', label='Center of Mass')
+            plt.gca().set_aspect('equal')
+            plt.legend()
+            plt.title(f"Stability Check: {'Stable' if is_inside else 'Unstable'} pose_number {index}")
+            plt.savefig(f"stability_check_{index:03d}.png", dpi=150)
+            plt.close()
+
         return is_inside
 
     def _is_stable_by_center_mass(self, rotation_vector: np.ndarray, index: int,
-                              alpha_tilt: float, beta_tilt: float) -> bool:
+                              alpha_tilt: float) -> bool:
         """
         Checks if the pose is stable on a tilted XY plane defined by alpha and beta tilt angles.
         A pose is considered stable if:
@@ -109,7 +110,6 @@ class PoseEliminator(PoseFinder):
 
         Tilts:
         alpha_tilt – CCW tilt (deg) around X-axis (front-back)
-        beta_tilt  – CCW tilt (deg) around Y-axis (left-right)
         """
 
         # Step 1: Apply pose rotation
@@ -131,9 +131,8 @@ class PoseEliminator(PoseFinder):
 
         # Step 3: Tilt the system so that the slide plane becomes horizontal
         alpha = np.radians(alpha_tilt)
-        beta = np.radians(beta_tilt)
 
-        R_tilt = R.from_euler('xy', [-alpha, -beta]).as_matrix()  # inverse tilt
+        R_tilt = R.from_euler('xy', [-alpha, 0]).as_matrix()  # inverse tilt
         contact_tilted = contact_vertices @ R_tilt.T
         com_tilted = rotated_mesh.center_mass @ R_tilt.T
 
@@ -152,8 +151,15 @@ class PoseEliminator(PoseFinder):
         except:
             return False
 
+        if not np.allclose(hull_points[0], hull_points[-1]): #close polygon if not already closed
+            hull_points = np.vstack([hull_points, hull_points[0]])
         path = Path(hull_points)
-        inside_polygon = path.contains_point(com_xy, radius=self.stability_tolerance)
+        if self.pose_types[index] == 3:
+           inside_polygon = path.contains_point(com_xy, radius=2)#looser tolerance for those pesky rolling cylinder poses
+           print ('self stability tol:', -self.stability_tolerance)
+        else:
+            inside_polygon = path.contains_point(com_xy, radius=self.stability_tolerance)
+            print ('self stability tol:', self.stability_tolerance)
 
         # Step 6: Y-span check at the back (min-X) face
         x_coords = verts[:, 0]
@@ -173,19 +179,19 @@ class PoseEliminator(PoseFinder):
         print('y min:', y_min, 'y max:', y_max, 'com y:', com_y)
 
         # Optional debug
-        '''
-        if not (inside_polygon and inside_y_span):
+        
+        if (inside_polygon and inside_y_span):
             plt.figure()
             plt.plot(*hull_points.T, 'k--', lw=1, label='Support Polygon')
-            plt.plot(com_xy[0], com_xy[1], 'ro', label='Center of Mass')
+            plt.plot(com_xy[0], com_xy[1], 'go', label='Center of Mass')
             plt.axhline(y_min, color='gray', linestyle='--', lw=0.5)
             plt.axhline(y_max, color='gray', linestyle='--', lw=0.5)
             plt.gca().set_aspect('equal')
             plt.legend()
-            plt.title(f"Unstable Pose {index} – α={alpha_tilt}°, β={beta_tilt}°")
+            plt.title(f"Stable Pose {index} – α={alpha_tilt}°")
             plt.savefig(f"stability_check_{index:03d}.png", dpi=150)
             plt.close()
-        '''
+        
 
         return inside_polygon and inside_y_span
 
@@ -264,7 +270,7 @@ class PoseEliminator(PoseFinder):
         self.pose_cylinder_group = filtered_cylinder_group
     
     
-    def remove_unstable_poses(self, alpha_tilt, beta_tilt):
+    def remove_unstable_poses(self, alpha_tilt):
         """
         Removes unstable poses based on the convex hull.
         :param rotations: List of tuples (pose, face_id, shadow_id, valid rotation vector).
@@ -282,9 +288,9 @@ class PoseEliminator(PoseFinder):
 
         for index, face_id, edge_id, quat in self.stable_rotations:
             print(f"Checking pose {index} for stability...")
-            is_stable_flat = self._is_stable_by_center_mass(quat, index, 0, 0)
-            is_stable_tilted = self._is_stable_by_center_mass(quat, index, alpha_tilt, beta_tilt)
-            print(f"Pose {index} stability: {is_stable_flat} and {is_stable_tilted}")
+            is_stable_flat = self._is_stable_by_center_mass(quat, index, 0)
+            is_stable_tilted = self._is_stable_by_center_mass(quat, index, alpha_tilt)
+            #print(f"Pose {index} stability: {is_stable_flat} and {is_stable_tilted}")
             if is_stable_flat and is_stable_tilted:
                 #print(f"Pose {index} is stable.")
                 stable_rotations.append((pose_count, face_id, edge_id, quat))

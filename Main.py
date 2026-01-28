@@ -14,6 +14,7 @@ from PoseVisualizer import PoseVisualizer
 script_dir = Path(__file__).parent
 
 # Get the current script's directory and then add the file path to the folders containing the workpiece stls
+# PLEASE MAKE SURE ALL WORKPIECES ARE IN MM UNITS FOR CONSISTENCY, THE TOLERANCES ARE FINE TUNED FOR FEATURES BETWEEN 1 AND 100 MM
 #workpiece_path =  script_dir / 'Workpieces'
 
 workpiece_path = script_dir / 'Werkstücke_STL_grob'
@@ -22,27 +23,27 @@ csv_path = script_dir / 'csv_outputs'
 
 workpiece_names = ['Teil_1', 'Teil_2', 'Teil_3', 'Teil_4', 'Teil_5']
 
-workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl4a','Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl2a','Kl4i','Qf1i','Qf2a','Qf4i','Qk1a','Qk2i','Qk4a','Ql1i','Ql2a','Ql4i','Rf1a','Rf2i','Rf4i','Rf3a','Rk1a','Rk2i','Rk3a','Rk4i','Rl1a','Rl2i','Rl3a','Rl4i']
-
+workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl2i','Dl4a','Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl2a','Kl4i','Qf1i','Qf2a','Qf4i','Qk1a','Qk2i','Qk4a','Ql1i','Ql2a','Ql4i','Rf1a','Rf2i','Rf4i','Rf3a','Rk1a','Rk2i','Rk3a','Rk4i','Rl1a','Rl2i','Rl3a','Rl4i']
+print(f"Total workpieces to process: {len(workpiece_names)}")
 #workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl4a','Qf1i','Qf2a','Qf4i','Qk1a','Qk2i','Qk4a','Ql1i','Ql2a','Ql4i','Rf1a','Rf2i','Rf4i','Rk1a','Rk2i','Rk3a','Rk4i','Rl1a','Rl2i','Rl3a','Rl4i']
 
 #List of workpieces with rounded features that are likely to appear in the convex hull
 #rounded_workpiece_names = ['Rf3a','Rl1a']
-circular_workpiece_names = ['Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl2a','Kl4i','Rl1a','Rf3a','Rl3a','Dk2a']
+circular_workpiece_names = ['Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl2a','Kl4i','Rl1a','Rf3a','Rl3a','Dk2a','Rl3a','Qk1a','Qf2a','Rk1a']
 
 #workpiece_names =['Df1a','Df4a','Df2i']
 #workpiece_names =['Rl4i','Ql4i','Qf4i','Df4a','Rk2i']
 #workpiece_names =['Rl2i','Df2i','Dk4i','Dl4a','Qk4a','Rf4i','Rk4i','Rf2i','Dl2i']
 #workpiece_names = ['Kl4i','Kl1i','Kl2a','Rl1a']
 #workpiece_names = ['Kk2i','Kl2a','Kf2a']
-workpiece_names = circular_workpiece_names
+#workpiece_names = circular_workpiece_names
 #workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk4i','Dl1a','Dl4a','Qf1i','Qf4i','Qk2i','Qk4a','Ql2a','Rf2i','Rf4i','Rk2i','Rk4i','Rl2i','Rl3a','Qk1a','Ql1i','Ql4i','Rf1a','Rf3a','Rk1a','Rk3a','Rl4i']
 #workpiece_names = ['Kf4i']
 #workpiece_names = ['Kk1a']
 #workpiece_names = ['Df4a','Df2i']
 #workpiece_names = ['Rf3a']
 #workpiece_names = ['Kf2a','Kl2a']
-#workpiece_names = ['Qk1a']
+workpiece_names = ['Kl4i','Kk4a','Kl2a','Kl1i']
 # is the step file origin at the center of mass of its convex hull? 0 = no, 1 = yes, when no make sure the step files origin is at the corner of a workpiece
 step_file_centered = 0
 
@@ -89,12 +90,8 @@ for workpiece_name in workpiece_names:
         pose_cylinder_axis_origin = [[0,0,0]]  * len(candidate_rotations)
         pose_cylinder_group = [0] * len(candidate_rotations)
 
-    if workpiece_name == 'Rl1a':
-        eliminator_tolerance = 1e-2
-        eliminator_stability_tolerance = -2 # tighter tolerance for the half square half circle workpiece
-    else:
-        eliminator_tolerance = 1e-1
-        eliminator_stability_tolerance = 4
+    eliminator_tolerance = 1e-2
+    eliminator_stability_tolerance = -2  # tighter tolerance for the half square half circle workpiece (Rl1a) to avoid too many stable poses like for Rl4i
 
     # Initialize the PoseEliminator with the convex hull OBJ file and self OBJ file
     pose_eliminator = PoseEliminator(
@@ -118,8 +115,8 @@ for workpiece_name in workpiece_names:
     # Remove cylinder poses based on alignment criteria
     pose_eliminator.remove_cylinder_poses()
 
-    # Remove rotations that are not stable enough by the crude centroid over resting plane detection, this also includes a secondary tilt angle check for stability when slide is tilted in alpha and beta tilt angles
-    pose_eliminator.remove_unstable_poses(20, 15)
+    # Remove rotations that are not stable enough by the crude centroid over resting plane detection, this also includes a secondary tilt angle check for stability when slide is tilted in alpha tilt angle only
+    pose_eliminator.remove_unstable_poses(0)
 
     # Find unique poses by considering symmetry with an adjustable tolerance, this is set for workpieces with feature sizes between 0.1 and 0.03 cm (I still think this is programmed weirdly)
     symmetrically_unique_rotations = pose_finder.symmetry_handler(pose_eliminator.get_stable_rotations(),1)
