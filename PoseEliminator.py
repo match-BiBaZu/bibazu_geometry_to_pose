@@ -81,8 +81,11 @@ class PoseEliminator(PoseFinder):
         # Point-in-polygon test using matplotlib.path
         path = Path(hull_points)
 
-        is_inside = path.contains_point(center_mass, radius=0) # small negative radius to be stricter on stability and make sure the center of mass is well within the support polygon (fixes Rl4i behaviour)
-        print(f"radius: {self.stability_tolerance}")
+        if self.pose_types[index] == 3:
+            is_inside = path.contains_point(center_mass, radius=2)  # looser tolerance for those pesky rolling cylinder poses
+        else:
+            is_inside = path.contains_point(center_mass, radius=self.stability_tolerance) # small negative radius to be stricter on stability and make sure the center of mass is well within the support polygon (fixes Rl4i behaviour)
+        #print(f"radius: {self.stability_tolerance}")
         #print(f"Center of mass {center_mass}.")
 
         # Diagnostic plot (always shown)
@@ -101,7 +104,7 @@ class PoseEliminator(PoseFinder):
         return is_inside
 
     def _is_stable_by_center_mass(self, rotation_vector: np.ndarray, index: int,
-                              alpha_tilt: float) -> bool:
+                              alpha_tilt: float, beta_tilt: float) -> bool:
         """
         Checks if the pose is stable on a tilted XY plane defined by alpha and beta tilt angles.
         A pose is considered stable if:
@@ -131,8 +134,9 @@ class PoseEliminator(PoseFinder):
 
         # Step 3: Tilt the system so that the slide plane becomes horizontal
         alpha = np.radians(alpha_tilt)
+        beta = np.radians(beta_tilt)
 
-        R_tilt = R.from_euler('xy', [-alpha, 0]).as_matrix()  # inverse tilt
+        R_tilt = R.from_euler('xy', [-alpha, -beta]).as_matrix()  # inverse tilt
         contact_tilted = contact_vertices @ R_tilt.T
         com_tilted = rotated_mesh.center_mass @ R_tilt.T
 
@@ -154,12 +158,10 @@ class PoseEliminator(PoseFinder):
         if not np.allclose(hull_points[0], hull_points[-1]): #close polygon if not already closed
             hull_points = np.vstack([hull_points, hull_points[0]])
         path = Path(hull_points)
-        if self.pose_types[index] == 3:
-           inside_polygon = path.contains_point(com_xy, radius=0)#looser tolerance for those pesky rolling cylinder poses
-           print ('self stability tol:', -self.stability_tolerance)
-        else:
-            inside_polygon = path.contains_point(com_xy, radius=self.stability_tolerance)
-            print ('self stability tol:', self.stability_tolerance)
+        #if self.pose_types[index] == 3:
+        #    inside_polygon = path.contains_point(com_xy, radius=0)  # looser tolerance for those pesky rolling cylinder poses
+        #else:
+        inside_polygon = path.contains_point(com_xy, radius=self.stability_tolerance)
 
         # Step 6: Y-span check at the back (min-X) face
         x_coords = verts[:, 0]
@@ -174,8 +176,11 @@ class PoseEliminator(PoseFinder):
             y_coords_back = back_tilted[:, 1]
             y_min, y_max = np.min(y_coords_back), np.max(y_coords_back)
             com_y = com_tilted[1]
-
-            inside_y_span = (y_min - self.tolerance) <= com_y <= (y_max + self.tolerance)
+            if self.pose_types[index] == 2:
+                inside_y_span = (y_min - 2) <= com_y <= (y_max + 2)  # looser tolerance for those pesky base cylinder poses
+            else:
+                inside_y_span = (y_min - self.tolerance) <= com_y <= (y_max + self.tolerance)
+        
         print('y min:', y_min, 'y max:', y_max, 'com y:', com_y)
 
         # Optional debug
@@ -270,7 +275,7 @@ class PoseEliminator(PoseFinder):
         self.pose_cylinder_group = filtered_cylinder_group
     
     
-    def remove_unstable_poses(self, alpha_tilt):
+    def remove_unstable_poses(self, alpha_tilt: float, beta_tilt: float):
         """
         Removes unstable poses based on the convex hull.
         :param rotations: List of tuples (pose, face_id, shadow_id, valid rotation vector).
@@ -287,9 +292,14 @@ class PoseEliminator(PoseFinder):
         pose_count = 0
 
         for index, face_id, edge_id, quat in self.stable_rotations:
-            print(f"Checking pose {index} for stability...")
-            is_stable_flat = self._is_stable_by_center_mass(quat, index, 0)
-            is_stable_tilted = self._is_stable_by_center_mass(quat, index, alpha_tilt)
+            #print(f"Checking pose {index} for stability...")
+            is_stable_flat = self._is_stable_by_center_mass(quat, index, 0, 0)
+
+            if self.pose_types[index] == 3:
+                is_stable_tilted = self._is_stable_by_center_mass(quat, index, alpha_tilt, 0) # ignore beta tilt as it was applied during cylinder pose assignment
+            else:
+                is_stable_tilted = self._is_stable_by_center_mass(quat, index, alpha_tilt, beta_tilt)
+
             #print(f"Pose {index} stability: {is_stable_flat} and {is_stable_tilted}")
             if is_stable_flat and is_stable_tilted:
                 #print(f"Pose {index} is stable.")

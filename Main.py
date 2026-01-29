@@ -36,9 +36,9 @@ circular_workpiece_names = ['Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl
 #workpiece_names =['Rl2i','Df2i','Dk4i','Dl4a','Qk4a','Rf4i','Rk4i','Rf2i','Dl2i']
 #workpiece_names = ['Kl4i','Kl1i','Kl2a','Rl1a']
 #workpiece_names = ['Kk2i','Kl2a','Kf2a']
-workpiece_names = circular_workpiece_names
+#workpiece_names = circular_workpiece_names
 #workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk4i','Dl1a','Dl4a','Qf1i','Qf4i','Qk2i','Qk4a','Ql2a','Rf2i','Rf4i','Rk2i','Rk4i','Rl2i','Rl3a','Qk1a','Ql1i','Ql4i','Rf1a','Rf3a','Rk1a','Rk3a','Rl4i']
-#workpiece_names = ['Kf4i']
+#workpiece_names = ['Kf4i','Kf2a']
 #workpiece_names = ['Kk1a']
 #workpiece_names = ['Df4a','Df2i']
 #workpiece_names = ['Rf3a']
@@ -49,6 +49,11 @@ step_file_centered = 0
 
 # location of axes points or perpedicular origin distance based cylinder check switch (usually 1, except for kk2i which uses a crude distance check)
 axis_based_cylinder_check = 1  # 0 = off, 1 = on
+
+eliminator_stability_tolerance = -1.5 #tolerance for center of mass point in polygon test during stability check, negative value means stricter check
+
+alpha_tilt_angle = 20.0  # degrees this is the perfect aero angle
+beta_tilt_angle = 5.0   # degrees this is the biggest angle before the workpiece shifts it's weight onto the other face of the slide in any poses
 
 # Get the workpiece name you want to find poses for
 #workpiece_name = 'Teil_2'
@@ -82,7 +87,7 @@ for workpiece_name in workpiece_names:
 
     # Find and classify cylinder poses from the candidate rotations (if cylinders are detected in the workpiece)
     if cylinder_axis_parameters:
-        candidate_rotations, xy_shadows, cylinder_axis_parameters, pose_types, pose_cylinder_radius, pose_cylinder_axis_direction, pose_cylinder_axis_origin, pose_cylinder_group = cylinder_handler.find_cylinder_poses(candidate_rotations, xy_shadows, cylinder_axis_parameters)
+        candidate_rotations, xy_shadows, cylinder_axis_parameters, pose_types, pose_cylinder_radius, pose_cylinder_axis_direction, pose_cylinder_axis_origin, pose_cylinder_group = cylinder_handler.find_cylinder_poses(candidate_rotations, xy_shadows, cylinder_axis_parameters,alpha_tilt_angle,beta_tilt_angle)
     else:
         pose_types = [0] * len(candidate_rotations)  # default: non-cylinder
         pose_cylinder_radius = [0] * len(candidate_rotations)
@@ -90,14 +95,12 @@ for workpiece_name in workpiece_names:
         pose_cylinder_axis_origin = [[0,0,0]]  * len(candidate_rotations)
         pose_cylinder_group = [0] * len(candidate_rotations)
 
-    eliminator_tolerance = 1e-2
-    eliminator_stability_tolerance = -2  # tighter tolerance for the half square half circle workpiece (Rl1a) to avoid too many stable poses like for Rl4i
 
     # Initialize the PoseEliminator with the convex hull OBJ file and self OBJ file
     pose_eliminator = PoseEliminator(
         str(workpiece_path / (workpiece_name + '_convex_hull.obj')),
         str(workpiece_path / (workpiece_name + '.obj')),
-        tolerance=eliminator_tolerance, # tolerance needs to be a bit looser for the cylinder workpieces when doing stability check
+        tolerance=1e-2, # tolerance needs to be a bit looser for the cylinder workpieces when doing stability check
         stability_tolerance=eliminator_stability_tolerance,
         stable_rotations=candidate_rotations,
         stable_shadows=xy_shadows,
@@ -116,7 +119,7 @@ for workpiece_name in workpiece_names:
     pose_eliminator.remove_cylinder_poses()
 
     # Remove rotations that are not stable enough by the crude centroid over resting plane detection, this also includes a secondary tilt angle check for stability when slide is tilted in alpha tilt angle only
-    pose_eliminator.remove_unstable_poses(0)
+    pose_eliminator.remove_unstable_poses(alpha_tilt_angle,beta_tilt_angle)
 
     # Find unique poses by considering symmetry with an adjustable tolerance, this is set for workpieces with feature sizes between 0.1 and 0.03 cm (I still think this is programmed weirdly)
     symmetrically_unique_rotations = pose_finder.symmetry_handler(pose_eliminator.get_stable_rotations(),1)

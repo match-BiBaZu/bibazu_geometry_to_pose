@@ -409,7 +409,7 @@ class PoseFinder:
 
                         tree = cKDTree(rotated_vertices)
                         dists, _ = tree.query(check_rotated_vertices, k=1)
-                        print(f"Comparing rotation {index} with rotation {check_index}, max distance: {max(dists)}")
+                        #print(f"Comparing rotation {index} with rotation {check_index}, max distance: {max(dists)}")
 
                         if max(dists) < symmetry_tolerance:
                             assigned_rotations[check_index] = assymetric_pose_count

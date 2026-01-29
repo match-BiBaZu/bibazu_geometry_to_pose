@@ -13,7 +13,7 @@ class CylinderHandler(PoseFinder):
         2 -> non-wobbly cylinder pose (axis ~ ±Y or ±Z)
     """
 
-    def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-5, rotation_steps: int = 12, wobble_angle: float = 2.0, axis_based_cylinder_check: int = 1):
+    def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-5, rotation_steps: int = 12, wobble_angle: float = 2.0, axis_based_cylinder_check: int = 1, alpha_tilt_angle: float = 0.0, beta_tilt_angle: float = 0.0):
 
         super().__init__(convex_hull_obj_file, self_obj_file, tolerance)
 
@@ -193,7 +193,7 @@ class CylinderHandler(PoseFinder):
                     if abs(dist - coax_r) <= band_coax:
                         rad_cnt += 1
                         break
-        print(f"Axis check  rad_cnt={rad_cnt}, total verts={len(verts)}")
+        #print(f"Axis check  rad_cnt={rad_cnt}, total verts={len(verts)}")
 
         return rad_cnt == len(verts) 
     
@@ -210,7 +210,7 @@ class CylinderHandler(PoseFinder):
 
         dist_to_plane = abs(plane_axis - axis_origin)
         
-        print(f"Axis origin check distance to plane={dist_to_plane}, radius={radius}, band={band}")
+        #print(f"Axis origin check distance to plane={dist_to_plane}, radius={radius}, band={band}")
 
         return abs(dist_to_plane - radius) <= band       
 
@@ -230,7 +230,7 @@ class CylinderHandler(PoseFinder):
         if not aligned:
             return 0.0, None, None
         for i, ax in enumerate(aligned):
-            print(f"Checking axis with radius {ax[2]} for pose {idx}...")
+            #print(f"Checking axis with radius {ax[2]} for pose {idx}...")
             #find list of radii for coaxial axes, specifically for workpieces such as kk1a where there are multiple coaxial cylinders
             coaxial_radii = [aligned[j][2] for j in range(len(aligned)) if group_ids[j] == group_ids[i]]
             if self._is_at_cylinder_radius(baseV, ax, coaxial_radii) and self._is_at_cylinder_radius_perpendicular(baseV[0][2], ax[0][2], ax[2]):
@@ -303,7 +303,9 @@ class CylinderHandler(PoseFinder):
     def find_cylinder_poses(self,
                             rotations,
                             xy_shadows,
-                            cylinder_axis_parameters):
+                            cylinder_axis_parameters,
+                            alpha_tilt_angle=0.0,
+                            beta_tilt_angle=0.0):
         """
         Classify each pose as cylinder-related or not.
 
@@ -325,7 +327,7 @@ class CylinderHandler(PoseFinder):
         cylinder_group = [0] * n_poses
 
         groups, group_dirs = self._group_by_first_dir(cylinder_axis_parameters)
-        print(f"Classifying {n_poses} poses in {len(groups)} direction groups.")
+        #print(f"Classifying {n_poses} poses in {len(groups)} direction groups.")
 
         for g, idxs in enumerate(groups):
             n_group = group_dirs[g]
@@ -349,14 +351,12 @@ class CylinderHandler(PoseFinder):
                         if cylinder_alignment_type in (3, 1):
                             candidates_base.append((i, rotations[i], direction, origin, radius))
                             candidate_all.append(i)
-                            pose_types[i] = 1  # mark as repeat cylinder pose to seperate from non cylinder pose
                         continue
 
                     if self._pose_has_pure_y(i, n_group, cylinder_axis_parameters):
                         if cylinder_alignment_type in (3, 2):
                             candidates_side.append((i, rotations[i], direction, origin, radius))
                             candidate_all.append(i)
-                            pose_types[i] = 1  # mark as repeat cylinder pose to seperate from non cylinder pose
                         continue
 
                     pose_types[i] = 4  # wobbly cylinder pose
@@ -369,17 +369,17 @@ class CylinderHandler(PoseFinder):
 
             # Assign lowest-z and highest-z pose from candidates_side as type 3
             self._assign_aligned_z_pose(candidates_side, pose_types, cylinder_axis_direction,
-                                    cylinder_axis_origin, cylinder_radius, cylinder_group, group_id=g)
+                                    cylinder_axis_origin, cylinder_radius, cylinder_group, group_id=g, beta_tilt_angle=beta_tilt_angle)
 
             # Assign lowest-y and highest-y pose from candidates_base as type 2
             self._assign_aligned_y_pose(candidates_base, pose_types, cylinder_axis_direction,
-                                    cylinder_axis_origin, cylinder_radius, cylinder_group, group_id=g)
+                                    cylinder_axis_origin, cylinder_radius, cylinder_group, group_id=g, alpha_tilt_angle=alpha_tilt_angle, beta_tilt_angle=beta_tilt_angle)
 
         return (rotations, xy_shadows, cylinder_axis_parameters,
                 pose_types, cylinder_radius,
                 cylinder_axis_direction, cylinder_axis_origin, cylinder_group)
 
-    def _assign_aligned_z_pose(self, candidates, pose_types, dirs, origins, radii, groups, group_id):
+    def _assign_aligned_z_pose(self, candidates, pose_types, dirs, origins, radii, groups, group_id,beta_tilt_angle=0.0):
         if not candidates:
             return
 
@@ -391,10 +391,19 @@ class CylinderHandler(PoseFinder):
             T[:3, :3] = Rmat
             m = self.mesh.copy()
             m.apply_transform(T)
+        
+            # Apply beta tilt (around Y-axis) in anticlockwise direction
+            beta_rad = np.radians(-beta_tilt_angle)
+            tilt_rot = R.from_euler('y', beta_rad).as_matrix()
+            tilt_T = np.eye(4)
+            tilt_T[:3, :3] = tilt_rot
+            m.apply_transform(tilt_T)
             return m.center_mass[2]
 
         idx_min = min(candidates, key=get_z)[0]
+        print(f"Lowest-z pose index: {idx_min}")
         idx_max = max(candidates, key=get_z)[0]
+        print(f"Highest-z pose index: {idx_max}")
 
         for idx, _, d, o, r in candidates:
             if idx == idx_min or idx == idx_max:
@@ -403,9 +412,11 @@ class CylinderHandler(PoseFinder):
                 origins[idx] = o
                 radii[idx] = r
                 groups[idx] = group_id
+            else:
+                pose_types[idx] = 1  # mark as repeat cylinder pose to seperate from non cylinder pose
 
 
-    def _assign_aligned_y_pose(self, candidates, pose_types, dirs, origins, radii, groups, group_id):
+    def _assign_aligned_y_pose(self, candidates, pose_types, dirs, origins, radii, groups, group_id,alpha_tilt_angle=0.0, beta_tilt_angle=0.0):
         if not candidates:
             return
 
@@ -417,10 +428,27 @@ class CylinderHandler(PoseFinder):
             T[:3, :3] = Rmat
             m = self.mesh.copy()
             m.apply_transform(T)
+
+            # Apply beta tilt (around Y-axis) in clockwise direction
+            beta_rad = np.radians(-beta_tilt_angle)
+            beta_rot = R.from_euler('y', beta_rad).as_matrix()
+            beta_T = np.eye(4)
+            beta_T[:3, :3] = beta_rot
+            m.apply_transform(beta_T)
+
+
+            # Apply alpha tilt (around X-axis) in anticlockwise direction
+            alpha_rad = np.radians(-alpha_tilt_angle)
+            alpha_rot = R.from_euler('x', alpha_rad).as_matrix()
+            alpha_T = np.eye(4)
+            alpha_T[:3, :3] = alpha_rot
+            m.apply_transform(alpha_T)
             return m.center_mass[1]
 
         idx_min = min(candidates, key=get_y)[0]
+        print(f"Lowest-y pose index: {idx_min}")
         idx_max = max(candidates, key=get_y)[0]
+        print(f"Highest-y pose index: {idx_max}")
 
         for idx, _, d, o, r in candidates:
             if idx == idx_min or idx == idx_max:
@@ -429,3 +457,5 @@ class CylinderHandler(PoseFinder):
                 origins[idx] = o
                 radii[idx] = r
                 groups[idx] = group_id
+            else:
+                pose_types[idx] = 1  # mark as repeat cylinder pose to seperate from non cylinder pose
