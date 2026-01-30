@@ -7,9 +7,13 @@ from matplotlib.path import Path
 import matplotlib.pyplot as plt
 
 class CentroidSolidAngleAnalyser(PoseFinder):
-    def __init__(self, poses = None, convex_hull_obj_file=None, obj_file=None, tolerance=1e-5):
+    def __init__(self, poses = None, convex_hull_obj_file=None, obj_file=None, pose_types=None, pose_cylinder_radius=None, pose_cylinder_axis_origin=None, pose_cylinder_axis_direction=None, tolerance=1e-5):
         super().__init__(convex_hull_obj_file, obj_file, tolerance)
         self.poses = poses
+        self.pose_types = pose_types
+        self.pose_cylinder_radius = pose_cylinder_radius
+        self.pose_cylinder_axis_origin = pose_cylinder_axis_origin
+        self.pose_cylinder_axis_direction = pose_cylinder_axis_direction
         self.csa_values = []
         self.stability_values = []
         self.crsa_values = []
@@ -62,6 +66,58 @@ class CentroidSolidAngleAnalyser(PoseFinder):
             omega += self.solid_angle_triangle(v0, verts[i], verts[i+1], point)
         
         return omega
+    
+    
+    import numpy as np
+
+
+    def cylinder_side_solid_angle_continuous(self,center, axis, R, L, com,
+                                            g_dir=np.array([0.0, 0.0, -1.0]),
+                                            n_theta=720, n_z=240):
+        """
+        Solid angle of the *lower half* of the lateral surface of a cylinder
+        as seen from `com`, computed by continuous surface integral.
+
+        Assumes the cylinder is resting on a plane under gravity direction g_dir.
+        """
+        a = np.linalg.norm(np.asarray(axis, float))
+        print('Axis direction:', a)
+        c0 = np.asarray(center, float)
+        p = np.asarray(com, float)
+        g = np.linalg.norm(np.asarray(g_dir, float))  # down
+
+        # Build radial basis e1,e2 in plane perpendicular to axis
+        # e1 points toward "down" projected into the cross-section plane.
+        g_perp = g - np.dot(g, a) * a
+        if np.linalg.norm(g_perp) < 1e-9:
+            raise ValueError("Axis parallel to gravity; 'side resting' not defined.")
+        e1 = np.linalg.norm((g_perp))          # points toward down in cross-section
+        e2 = np.linalg.norm((np.cross(a, e1))) # completes right-handed basis
+
+        # Parameter grids
+        thetas = np.linspace(-np.pi/2, np.pi/2, n_theta)  # lower half: radial dot g >= 0
+        zs = np.linspace(-L/2, L/2, n_z)
+
+        dtheta = thetas[1] - thetas[0]
+        dz = zs[1] - zs[0]
+
+        Omega = 0.0
+        for z in zs:
+            for th in thetas:
+                n = np.cos(th) * e1 + np.sin(th) * e2          # outward normal on lateral surface
+                x = c0 + R * n + z * a                         # point on surface
+                r = x - p
+                rn = np.dot(r, n)
+                rnorm = np.linalg.norm(r)
+                # dA = R dtheta dz
+                Omega += (rn / (rnorm**3)) * (R * dtheta * dz)
+
+        # Optional: "height" to tangent plane at lowest point (for CSA score Omega/h)
+        up = -g
+        p0 = c0 - R * e1  # lowest point on cylinder (along down direction)
+        h = abs(np.dot(p - p0, up))
+
+        return Omega, h, Omega / (h + 1e-12)
 
     
     def compute_scores(self):
@@ -130,11 +186,29 @@ class CentroidSolidAngleAnalyser(PoseFinder):
 
             # compute surface area of the polygonal face
             # points: (N,2), ordered, not closed
+            #if self.pose_types[index] == 3:
+            #    y_min, y_max = np.min(hull_3d[:, 1]), np.max(hull_3d[:, 1])
+            #    length = y_max - y_min
+            #    area = np.pi * self.pose_cylinder_radius[index] * length
+            #else:
+
             x = hull_3d[:, 0]
             y = hull_3d[:, 1]
             area =  0.5 * np.abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
 
-            # solid angle (Q)
+            #if self.pose_types[index] == 3:
+            #    print('Computing solid angle of cylinder side face')
+            #    y_min, y_max = np.min(hull_3d[:, 1]), np.max(hull_3d[:, 1])
+            #    y_center = 0.5 * (y_min + y_max)
+            #    Q = self.cylinder_side_solid_angle_continuous([self.pose_cylinder_axis_origin[index][0], y_center, self.pose_cylinder_axis_origin[index][2]],
+            #                                                   self.pose_cylinder_axis_direction[index],
+            #                                                   self.pose_cylinder_radius[index],
+            #                                                   y_max - y_min,
+            #                                                   com_tilted,
+            #                                                   g_dir=np.array([0,0,-1]))  # if world z is up)
+            #else:
+                
+                
             Q = self.solid_angle_polygon(hull_3d, com_tilted)
 
             # critical solid angle (Qcrit)
@@ -149,19 +223,27 @@ class CentroidSolidAngleAnalyser(PoseFinder):
                 # midpoint of the edge
                 edge_mid = 0.5 * (v0 + v1)
 
-                d = np.sqrt(np.sum((com_tilted[:1] - edge_mid[:1]) ** 2))  # distance from COM to edge midpoint in same plane projection
-
-                z_crit = com_tilted[2] + d  # elevation of critical point above resting plane at tipping edge
-
-                Q_crit = self.solid_angle_polygon(hull_3d, [edge_mid[0],edge_mid[1],z_crit]) # compute tipping solid angle for one edge
+                z_crit = len(com_tilted - edge_mid) # distance from COM to edge midpoint in same plane projection
+                print(z_crit)
+                Q_crit = self.solid_angle_polygon(hull_3d, [com_tilted[0],com_tilted[1],z_crit]) # compute tipping solid angle for one edge
 
                 delta = Q - Q_crit
 
                 delta_sum += max(0.0, delta)
+                '''
+                plt.figure()
+                plt.plot(hull_3d[:, 0], hull_3d[:, 1], 'k--', lw=1, label='Support Polygon')
+                plt.plot(edge_mid[0], edge_mid[1], 'go', label='Center of Mass')
+                plt.gca().set_aspect('equal')
+                plt.legend()
+                plt.text(0.95, 0.95, 'Q = {:.4f} sr\nStability Area = {:.4f} \nQcrit Sum = {:.4f} sr\n'.format(Q, area, delta_sum), fontsize=8, transform=plt.gca().transAxes, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+                plt.savefig(f"csa_check_{index:03d}.png", dpi=150)
+                plt.close()
+                '''
 
             # height (h)
             h = abs(com_tilted[2] - min_z)
-            
+
             ''' Debug plot
             plt.figure()
             plt.plot(hull_3d[:, 0], hull_3d[:, 1], 'k--', lw=1, label='Support Polygon')

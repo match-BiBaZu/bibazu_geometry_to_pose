@@ -236,24 +236,24 @@ class CylinderHandler(PoseFinder):
             if self._is_at_cylinder_radius(baseV, ax, coaxial_radii) and self._is_at_cylinder_radius_perpendicular(baseV[0][2], ax[0][2], ax[2]):
                 if self._is_at_cylinder_radius(backV, ax, coaxial_radii) and self._is_at_cylinder_radius_perpendicular(backV[0][0], ax[0][0], ax[2]):
                     cylinder_alignment_type = 3 # full cylinder pose
-                    print(f"Found full cylinder pose (3) for pose {idx} with radius {ax[2]}.")
+                    #print(f"Found full cylinder pose (3) for pose {idx} with radius {ax[2]}.")
                     origin, direction, radius = ax
                     return radius, direction, origin,cylinder_alignment_type
                 else:
-                    print(f"Found back cylinder pose (2) for pose {idx} with radius {ax[2]}.")
+                    #print(f"Found back cylinder pose (2) for pose {idx} with radius {ax[2]}.")
                     cylinder_alignment_type = 2 # cylinder resting on back only
                     origin, direction, radius = ax
                     return radius, direction, origin,cylinder_alignment_type
             else:
 
                 if self._is_at_cylinder_radius(backV, ax, coaxial_radii) and self._is_at_cylinder_radius_perpendicular(backV[0][0], ax[0][0], ax[2]):
-                    print(f"Found base cylinder pose (1) for pose {idx} with radius {ax[2]}.")
+                    #print(f"Found base cylinder pose (1) for pose {idx} with radius {ax[2]}.")
                     cylinder_alignment_type = 1 # cylinder resting on base only
                     origin, direction, radius = ax
                     return radius, direction, origin,cylinder_alignment_type
                 else:
                     cylinder_alignment_type = 0
-                    print(f"No cylinder pose found for pose {idx} with radius {ax[2]}.")
+                    #print(f"No cylinder pose found for pose {idx} with radius {ax[2]}.")
                     return 0.0, None, None,cylinder_alignment_type
 
     def _pose_has_pure_y_or_z(self, idx, n_ref, cylinder_axis_parameters):
@@ -401,9 +401,9 @@ class CylinderHandler(PoseFinder):
             return m.center_mass[2]
 
         idx_min = min(candidates, key=get_z)[0]
-        print(f"Lowest-z pose index: {idx_min}")
+        #print(f"Lowest-z pose index: {idx_min}")
         idx_max = max(candidates, key=get_z)[0]
-        print(f"Highest-z pose index: {idx_max}")
+        #print(f"Highest-z pose index: {idx_max}")
 
         for idx, _, d, o, r in candidates:
             if idx == idx_min or idx == idx_max:
@@ -446,9 +446,9 @@ class CylinderHandler(PoseFinder):
             return m.center_mass[1]
 
         idx_min = min(candidates, key=get_y)[0]
-        print(f"Lowest-y pose index: {idx_min}")
+        #print(f"Lowest-y pose index: {idx_min}")
         idx_max = max(candidates, key=get_y)[0]
-        print(f"Highest-y pose index: {idx_max}")
+        #print(f"Highest-y pose index: {idx_max}")
 
         for idx, _, d, o, r in candidates:
             if idx == idx_min or idx == idx_max:

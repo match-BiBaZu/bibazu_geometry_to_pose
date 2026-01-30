@@ -446,7 +446,6 @@ class PoseVisualizer:
                     legend_lines.append(f"Resting Face {face_id_i}")
                     legend_lines.append(f"Quaternion {np.round(quat, 4)}") # [x,y,z,w]
                     self._add_score_box(ax, rot_idx) # <- Add score box
-                    print('Added score box for pose', rot_idx)
 
                 ax.set_title("\n".join(legend_lines), fontsize=self.fs["title"])
                 fig.subplots_adjust(hspace=0.5)

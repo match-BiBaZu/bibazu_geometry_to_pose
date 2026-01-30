@@ -158,9 +158,7 @@ class PoseEliminator(PoseFinder):
         if not np.allclose(hull_points[0], hull_points[-1]): #close polygon if not already closed
             hull_points = np.vstack([hull_points, hull_points[0]])
         path = Path(hull_points)
-        #if self.pose_types[index] == 3:
-        #    inside_polygon = path.contains_point(com_xy, radius=0)  # looser tolerance for those pesky rolling cylinder poses
-        #else:
+
         inside_polygon = path.contains_point(com_xy, radius=self.stability_tolerance)
 
         # Step 6: Y-span check at the back (min-X) face
