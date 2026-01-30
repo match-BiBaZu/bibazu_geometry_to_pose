@@ -426,6 +426,9 @@ class PoseFinder:
                                           cylinder_axis_origin: list[list[tuple]], 
                                           cylinder_axis_direction: list[list[tuple]],
                                           cylinder_group_ids: list[list[int]],
+                                          critical_solid_angle_scores: list[float],
+                                          centroid_solid_angle_scores: list[float],
+                                          stability_scores: list[float],
                                           output_cylinder_features: bool,
                                           output_file: str):
         """
@@ -441,7 +444,7 @@ class PoseFinder:
             if output_cylinder_features:
                 f.write("PoseID,FaceID,EdgeID,PoseType,Cylinder_Radius,CylinderGroupID,AxisOriginX,AxisOriginY,AxisOriginZ,AxisDirX,AxisDirY,AxisDirZ,QuatX,QuatY,QuatZ,QuatW\n")
             else:
-                f.write("PoseID,FaceID,EdgeID,PoseType,QuatX,QuatY,QuatZ,QuatW\n")
+                f.write("PoseID,FaceID,EdgeID,PoseType,QuatX,QuatY,QuatZ,QuatW,Critical_Solid_Angle,Centroid_Solid_Angle,Stability\n")
             for i, rotation in enumerate(candidate_rotations):
                 quat = rotation[3]
                 #origin = cylinder_axis_origin[i] if i < len(cylinder_axis_origin) else (0.0, 0.0, 0.0)
@@ -457,70 +460,4 @@ class PoseFinder:
                 else:
                     f.write(f"{rotation[0]},{rotation[1]},{rotation[2]},"
                             f"{pose_types[i]},"
-                            f"{quat[0]},{quat[1]},{quat[2]},{quat[3]}\n")
-
-    def write_pose_shadows_to_file(
-        self,
-        rotations: list[tuple[int, int, int, tuple[float, float, float, float]]],
-        shadows: list[np.ndarray] | None = None,
-        out_dir: str = "Shadows",
-        integer: bool = True,
-        decimals: int = 0,
-    ) -> list[str]:
-        """
-        Write the convex-hull XY shadow for each pose to txt files:
-        Shadows/<workpieceId>_<poseId>.txt
-
-        File format:
-            //Please don't alter its structure or it may become unreadable!
-            x1,y1
-            x2,y2
-            ...
-
-        Args:
-            rotations: [(pose_id, face_id, edge_id, quat[x,y,z,w]), ...]
-            shadows: optional list of precomputed shadows (same order as rotations).
-                    Each is (N,3) on z=const. If None, they are computed here.
-            out_dir: output directory.
-            integer: if True, write integer coordinates (rounded). If False, write floats.
-            decimals: number of decimal places when integer=False (ignored when integer=True).
-
-        Returns:
-            List of file paths written.
-        """
-        import os
-        os.makedirs(out_dir, exist_ok=True)
-
-        written = []
-        for idx, (pose_id, _face_id, _edge_id, quat) in enumerate(rotations):
-            # Use provided shadow if available; otherwise compute from rotated convex hull
-            if shadows is not None and idx < len(shadows) and shadows[idx] is not None:
-                shadow_xy = np.asarray(shadows[idx], float)[:, :2]
-            else:
-                rot = R.from_quat(quat)
-                verts_rot = rot.apply(self.convex_hull_mesh.vertices)
-                shadow, _ = self._compute_xy_shadow(verts_rot)
-                shadow_xy = shadow[:, :2]
-
-            # Format coordinates
-            if integer:
-                xy_out = np.rint(shadow_xy).astype(int)
-                def fmt_pair(x, y): return f"{int(x)},{int(y)}"
-            else:
-                xy_out = np.round(shadow_xy, decimals=decimals)
-                def fmt_pair(x, y): return f"{x:.{decimals}f},{y:.{decimals}f}"
-
-            # File path: <stem>_<poseId>.txt
-            fname = f"{self.obj_stem}_{pose_id}.txt"
-            fpath = os.path.join(out_dir, fname)
-
-            # Write file
-            with open(fpath, "w", newline="\n") as f:
-                f.write("//This file was created by GripperApplet\n")
-                f.write("//Please don't alter its structure or it may become unreadable!\n")
-                for x, y in xy_out:
-                    f.write(fmt_pair(x, y) + "\n")
-
-            written.append(fpath)
-
-        return written
+                            f"{quat[0]},{quat[1]},{quat[2]},{quat[3]},{critical_solid_angle_scores[i]},{centroid_solid_angle_scores[i]},{stability_scores[i]}\n")

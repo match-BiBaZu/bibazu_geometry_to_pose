@@ -64,7 +64,7 @@ class PoseEliminator(PoseFinder):
             ''' Plots for debugging 
             plt.figure()
             if projected_points.shape[0] > 0:
-                plt.scatter(*projected_points.T, c='k', label='Projected Vertices')
+            plt.scatter(*projected_points.T, c='k', label='Projected Vertices')
             plt.plot(center_mass[0], center_mass[1], 'ro', label='Center of Mass')
             plt.gca().set_aspect('equal')
             plt.legend()
@@ -181,7 +181,7 @@ class PoseEliminator(PoseFinder):
             else:
                 inside_y_span = (y_min - self.tolerance) <= com_y <= (y_max + self.tolerance)
         
-        print('y min:', y_min, 'y max:', y_max, 'com y:', com_y)
+        #print('y min:', y_min, 'y max:', y_max, 'com y:', com_y)
 
         # Optional debug
         '''
@@ -262,7 +262,6 @@ class PoseEliminator(PoseFinder):
                 filtered_cylinder_axis_origin.append(self.pose_cylinder_axis_origin[index])
                 filtered_cylinder_group.append(self.pose_cylinder_group[index])
 
-
                 pose_count += 1
         
         self.stable_rotations = assigned_rotations
@@ -336,6 +335,9 @@ class PoseEliminator(PoseFinder):
         filtered_cylinder_axis_direction = []
         filtered_cylinder_axis_origin = []
         filtered_cylinder_group = []
+        filtered_critical_solid_angle_scores = []
+        filtered_centroid_solid_angle_scores = []
+        filtered_stability_scores = []
         pose_count = 0
 
         for index, face_id, edge_id, quat in self.stable_rotations:

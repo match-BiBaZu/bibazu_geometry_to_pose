@@ -8,6 +8,7 @@ from PoseFinder import PoseFinder
 from CylinderHandler import CylinderHandler
 from PoseEliminator import PoseEliminator
 from PoseVisualizer import PoseVisualizer
+from CentroidSolidAngleAnalyser import CentroidSolidAngleAnalyser
 
 
 # Get the current script's directory
@@ -28,7 +29,6 @@ print(f"Total workpieces to process: {len(workpiece_names)}")
 #workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl4a','Qf1i','Qf2a','Qf4i','Qk1a','Qk2i','Qk4a','Ql1i','Ql2a','Ql4i','Rf1a','Rf2i','Rf4i','Rk1a','Rk2i','Rk3a','Rk4i','Rl1a','Rl2i','Rl3a','Rl4i']
 
 #List of workpieces with rounded features that are likely to appear in the convex hull
-#rounded_workpiece_names = ['Rf3a','Rl1a']
 circular_workpiece_names = ['Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl2a','Kl4i','Rl1a','Rf3a','Rl3a','Dk2a','Rl3a','Qk1a','Qf2a','Rk1a']
 
 #workpiece_names =['Df1a','Df4a','Df2i']
@@ -40,8 +40,8 @@ circular_workpiece_names = ['Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl
 #workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk4i','Dl1a','Dl4a','Qf1i','Qf4i','Qk2i','Qk4a','Ql2a','Rf2i','Rf4i','Rk2i','Rk4i','Rl2i','Rl3a','Qk1a','Ql1i','Ql4i','Rf1a','Rf3a','Rk1a','Rk3a','Rl4i']
 #workpiece_names = ['Kf4i','Kf2a']
 #workpiece_names = ['Kk1a']
-#workpiece_names = ['Df4a','Df2i']
-#workpiece_names = ['Rf3a']
+#workpiece_names = ['Df1a']
+#workpiece_names = ['Rk2i','Rk4i']
 #workpiece_names = ['Kf2a','Kl2a']
 #workpiece_names = ['Kl4i','Kk4a','Kl2a','Kl1i']
 # is the step file origin at the center of mass of its convex hull? 0 = no, 1 = yes, when no make sure the step files origin is at the corner of a workpiece
@@ -78,6 +78,8 @@ for workpiece_name in workpiece_names:
     # Find candidate rotations based on face normals and shadow edges
     candidate_rotations, xy_shadows, cylinder_axis_parameters = pose_finder.find_candidate_rotations_by_face_and_shadow_alignment()
 
+    
+
     if workpiece_name == 'Kk2i':
         axis_based_cylinder_check = 0  # crude perpendicular distance origin check for kk2i as its convex hull points are all a radius away from the cylinder axis
     else:
@@ -95,7 +97,6 @@ for workpiece_name in workpiece_names:
         pose_cylinder_axis_origin = [[0,0,0]]  * len(candidate_rotations)
         pose_cylinder_group = [0] * len(candidate_rotations)
 
-
     # Initialize the PoseEliminator with the convex hull OBJ file and self OBJ file
     pose_eliminator = PoseEliminator(
         str(workpiece_path / (workpiece_name + '_convex_hull.obj')),
@@ -109,7 +110,7 @@ for workpiece_name in workpiece_names:
         pose_cylinder_radius=pose_cylinder_radius,
         pose_cylinder_axis_direction=pose_cylinder_axis_direction,
         pose_cylinder_axis_origin=pose_cylinder_axis_origin,
-        pose_cylinder_group=pose_cylinder_group
+        pose_cylinder_group=pose_cylinder_group,
     )
 
     # Remove duplicate rotations (if any) from the candidate rotations
@@ -124,12 +125,22 @@ for workpiece_name in workpiece_names:
     # Find unique poses by considering symmetry with an adjustable tolerance, this is set for workpieces with feature sizes between 0.1 and 0.03 cm (I still think this is programmed weirdly)
     symmetrically_unique_rotations = pose_finder.symmetry_handler(pose_eliminator.get_stable_rotations(),1)
 
+    # Compute centroid solid angle scores for the realised poses
+    centroid_solid_angle_analyser = CentroidSolidAngleAnalyser(symmetrically_unique_rotations, str(workpiece_path / (workpiece_name + '_convex_hull.obj')), str(workpiece_path / (workpiece_name + '.obj')), 1e-2)
+    centroid_solid_angle_analyser.compute_scores()
+    centroid_solid_angle_scores = centroid_solid_angle_analyser.csa_scores
+    stability_scores = centroid_solid_angle_analyser.stability_scores
+    critical_solid_angle_scores = centroid_solid_angle_analyser.crsa_scores
+
     pose_finder.write_candidate_rotations_to_file(symmetrically_unique_rotations, 
                                                   pose_eliminator.get_pose_types(),
                                                   pose_eliminator.get_pose_cylinder_radius(), 
                                                   pose_eliminator.get_pose_cylinder_axis_origin(),
                                                   pose_eliminator.get_pose_cylinder_axis_direction(),
                                                   pose_eliminator.get_pose_cylinder_group(),
+                                                  critical_solid_angle_scores,
+                                                  centroid_solid_angle_scores,
+                                                  stability_scores,
                                                   False, #output_cylinder_features flag set to false but can be set to true if cylinder features are desired in the output
                                                   str(csv_path / (workpiece_name + '_candidate_rotations.csv'))
                                                   )
@@ -137,7 +148,7 @@ for workpiece_name in workpiece_names:
     #pose_finder.write_pose_shadows_to_file(symmetrically_unique_rotations,xy_shadows)
 
     # Initialize the PoseVisualizer with the original and convex hull OBJ files and valid rotations
-    pose_visualizer = PoseVisualizer(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '_convex_hull.obj')),symmetrically_unique_rotations, pose_eliminator.get_stable_shadows(), pose_eliminator.get_stable_axis_parameters())
+    pose_visualizer = PoseVisualizer(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '_convex_hull.obj')),symmetrically_unique_rotations, pose_eliminator.get_stable_shadows(), pose_eliminator.get_stable_axis_parameters(),critical_solid_angle_scores,centroid_solid_angle_scores,stability_scores)
 
     # Visualize the valid poses
     pose_visualizer.visualize_rotations(workpiece_name)

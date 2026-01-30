@@ -12,6 +12,9 @@ class PoseVisualizer:
     def __init__(self, original_obj_file: str = None, convex_hull_obj_file: str = None,
                  valid_rotations: list = None, xy_shadows: list = None,
                  cylinder_axis_params: list | None = None,
+                 critical_solid_angle_scores: list | None = None,
+                 centroid_solid_angle_scores: list | None = None,
+                 stability_scores: list | None = None,
                  font_scale: float = 1.2):
         """
         Initialize the PoseVisualizer.
@@ -39,6 +42,10 @@ class PoseVisualizer:
 
         self.valid_rotations = valid_rotations or []
 
+        self.critical_solid_angle_scores = critical_solid_angle_scores 
+        self.centroid_solid_angle_scores = centroid_solid_angle_scores
+        self.stability_scores = stability_scores
+
         # --- normalize cylinder input into: rot_idx -> list[dict] -----------------
         self._cyl_axes_by_rot_idx = {}
         if cylinder_axis_params is None:
@@ -62,7 +69,7 @@ class PoseVisualizer:
         # font sizes (scaled)
         self.fs = {
             "tick":      int(9  * font_scale),
-            "legend":    int(10 * font_scale),
+            "legend":    int(9 * font_scale),
             "title":     int(9 * font_scale),
             "suptitle":  int(14 * font_scale),
             "coord_lbl": int(11 * font_scale),
@@ -345,6 +352,27 @@ class PoseVisualizer:
         start = int(np.argmin(scores))
         return indices[start:] + indices[:start]
 
+    def _add_score_box(self, ax, rot_idx):
+        """Adds a box with score values to the top-right corner of a plot."""
+        if not hasattr(self, "centroid_solid_angle_scores") or not hasattr(self, "critical_solid_angle_scores") or not hasattr(self, "stability_scores"):
+            return
+
+        # take the scores at the same index the rot idx appears as pose number first
+        indices = [i for i, (r_idx, _, _, _) in enumerate(self.valid_rotations) if r_idx == rot_idx]
+        # Only draw one box per symmetric pose group
+        critical = self.critical_solid_angle_scores[indices[0]]
+        centroid = self.centroid_solid_angle_scores[indices[0]]
+        stable = self.stability_scores[indices[0]]
+
+        text = f"CSA: {centroid:.2f}%\n"
+        text += f"CSRA: {critical:.2f}%\n"
+        text += f"Stability: {stable:.2f}%"
+
+
+        ax.text2D(0.98, 0.98, text, transform=ax.transAxes,
+        fontsize=10, verticalalignment='top', horizontalalignment='right',
+        bbox=dict(boxstyle="round,pad=0.5", facecolor="white", edgecolor="gray", alpha=0.8))
+
     def visualize_rotations(self, workpiece_name: str = None):
         """
         Visualizes all rotations grouped by face_id.
@@ -416,7 +444,9 @@ class PoseVisualizer:
                         self._add_cylinder_axis(ax, unrotated_cyls, scale=0.2, zorder=100)  # unrotated, for reference
 
                     legend_lines.append(f"Resting Face {face_id_i}")
-                    legend_lines.append(f"Quaternion {np.round(quat, 4)}") # [x,y,z,w] 
+                    legend_lines.append(f"Quaternion {np.round(quat, 4)}") # [x,y,z,w]
+                    self._add_score_box(ax, rot_idx) # <- Add score box
+                    print('Added score box for pose', rot_idx)
 
                 ax.set_title("\n".join(legend_lines), fontsize=self.fs["title"])
                 fig.subplots_adjust(hspace=0.5)
