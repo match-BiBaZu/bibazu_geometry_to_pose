@@ -108,12 +108,81 @@ class CentroidSolidAngleAnalyser(PoseEliminator):
             delta_sum += max(0.0, delta)
 
         return delta_sum
+    
+    def fix_contact_edge_alignment_axis(
+        self,
+        contact_polygon,
+        edge_origin,
+        edge_direction,
+        direction='z',
+        target_val=0.0,
+        tolerance=1e-6,
+    ):
+        """
+        Snaps vertex coordinates of a contact polygon to a plane if the edge they're on
+        is facing toward the intersecting direction (e.g. -x or -z), and is near the
+        infinite edge line defined by (edge_origin, edge_direction).
 
-    def safe_normalize_to_percent(values, total, eps=1e-12):
-        values = np.asarray(values, dtype=float)
-        if total <= eps:
-            return np.zeros_like(values)
-        return (values / (total + eps)) * 100.0    
+        Parameters
+        ----------
+        contact_polygon : (N, 3) np.ndarray
+            The polygon vertices in 3D (should be ordered/cyclic).
+        edge_origin : (3,) np.ndarray
+            A point on the shared edge line (e.g., [min_x, 0, min_z]).
+        edge_direction : (3,) np.ndarray
+            Unit direction vector of the edge (e.g., [0, 1, 0]).
+        direction : str
+            Which axis to check normal against: 'x' or 'z'.
+        target_val : float
+            Value to assign to the target axis (typically min_x or min_z).
+        tolerance : float
+            Max distance from the edge axis to snap a point.
+
+        Returns
+        -------
+        corrected : (N, 3) np.ndarray
+            Adjusted polygon vertices.
+        """
+        corrected = contact_polygon.copy()
+        N = len(corrected)
+
+        axis_map = {'z': (1, 2), 'x': (0, 1)}  # 2D projection indices
+        target_idx = {'z': 2, 'x': 0}          # axis to overwrite
+
+        if direction not in axis_map:
+            raise ValueError("direction must be 'x' or 'z'")
+
+        i1, i2 = axis_map[direction]
+        t_idx = target_idx[direction]
+
+        for i in range(N):
+            v0 = corrected[i]
+            v1 = corrected[(i + 1) % N]
+
+            # Edge vector in local 2D projection
+            edge_vec = v1[[i1, i2]] - v0[[i1, i2]]
+            norm = np.linalg.norm(edge_vec)
+            if norm < 1e-9:
+                continue
+            edge_unit = edge_vec / norm
+
+            # 2D normal (CCW rotation)
+            normal = np.array([-edge_unit[1], edge_unit[0]])
+
+            # Check if normal points in negative direction (e.g. -z or -x)
+            if normal[1] < -0.5:
+                for vi in [i, (i + 1) % N]:
+                    p = corrected[vi]
+
+                    # Distance from point to axis (in 3D)
+                    v = p - edge_origin
+                    proj = np.dot(v, edge_direction) * edge_direction
+                    dist = np.linalg.norm(v - proj)
+
+                    if dist < tolerance:
+                        corrected[vi, t_idx] = target_val
+        return corrected
+
         
 
     def compute_scores(self, alpha_tilt, beta_tilt):
@@ -146,33 +215,59 @@ class CentroidSolidAngleAnalyser(PoseEliminator):
 
             # Step 3: Indentify contact verticies at base and back plane
             verts = rotated_mesh.vertices
+            com = rotated_mesh.center_mass 
             min_z = np.min(verts[:, 2])  # base plane
             min_x = np.min(verts[:, 0])  # back plane
+
+            edge_origin = np.array([min_x, 0.0, min_z])
+            edge_direction = np.array([0.0, 1.0, 0.0])  # intersection of x=min_x and z=min_z
             
             # Step 3: Tilt the system so that the center of mass becomes offset by the tilt angle
             alpha = np.radians(alpha_tilt)
             beta = np.radians(beta_tilt)
 
-            if self.pose_types == 3:
-                R_tilt = R.from_euler('xy', [alpha, 0]).as_matrix()  # inverse tilt
-            else:
-                R_tilt = R.from_euler('xy', [alpha, -beta]).as_matrix()  # inverse tilt
+            R_tilt = R.from_euler('xy', [alpha, -beta]).as_matrix()  # inverse tilt
 
             verts_tilted = verts @ R_tilt.T
-            com_tilted   = rotated_mesh.center_mass @ R_tilt.T
+            com_tilted   = com @ R_tilt.T
 
             #find the location of the verticies which are touching the back and base planes before the tilt is applied
             base_idx = np.where(np.abs(verts[:, 2] - min_z) < self.tolerance)[0]
             back_idx = np.where(np.abs(verts[:, 0] - min_x) < self.tolerance)[0]
+
+            
+            base_contact = verts[base_idx]
+            back_contact = verts[back_idx]
+
+            # 3. Apply snapping to edge before rotation, this is a modification of the resting surface to account for simulataneous resting on back contact
+            base_contact_corrected = self.fix_contact_edge_alignment_axis(
+                contact_polygon=base_contact,
+                edge_origin=edge_origin,
+                edge_direction=edge_direction,
+                direction='x',
+                target_val=min_x,
+                tolerance=self.tolerance,
+            )
+
+            back_contact_corrected = self.fix_contact_edge_alignment_axis(
+                contact_polygon=back_contact,
+                edge_origin=edge_origin,
+                edge_direction=edge_direction,
+                direction='z',
+                target_val=min_z,
+                tolerance=self.tolerance,
+            )
+
             
             #find the location of the verticies which are touching the edge before the tilt is applied
             edge_idx = np.intersect1d(base_idx, back_idx)
 
             # use the location of these verticies to extract the tilted polygons
-            base_contact_tilt = verts_tilted[base_idx]
-            back_contact_tilt = verts_tilted[back_idx]
+            base_contact_tilt = base_contact_corrected @ R_tilt.T
+            back_contact_tilt = back_contact_corrected @ R_tilt.T
 
             edge_contact_tilt = verts_tilted[edge_idx]
+            
 
             if len(np.unique(base_contact_tilt,axis= 0)) >= 3:
                 # create convex hull projection of tilted base convex hull onto the base xy plane
@@ -200,9 +295,9 @@ class CentroidSolidAngleAnalyser(PoseEliminator):
                     a_base, b_base, c_base = np.linalg.lstsq(A_base, base_contact_tilt[:,2], rcond=None)[0]
 
                     # z of plane directly under COM (same x,y)
-                    z_base = a_base*com_tilted[0] + b_base*com_tilted[1] + c_base
+                    #z_base = a_base*com_tilted[0] + b_base*com_tilted[1] + c_base
 
-                    h = abs(com_tilted[2] - z_base)
+                    h = abs(com[2] - min_z)*np.cos(alpha)*np.cos(beta)
 
                     csa_base = Q_base/h
                     crsa_base = delta_base/h
@@ -244,9 +339,9 @@ class CentroidSolidAngleAnalyser(PoseEliminator):
                     a_back, b_back, c_back = np.linalg.lstsq(A_back, back_contact_tilt[:,2], rcond=None)[0]
 
                     # z of plane directly under COM (same x,y)
-                    z_back = a_back*com_tilted[0] + b_back*com_tilted[1] + c_back
+                    #z_back = a_back*com_tilted[0] + b_back*com_tilted[1] + c_back
 
-                    d = abs(com_tilted[0] - z_back)
+                    d = abs(com[0] - min_x)*np.cos(alpha)*np.sin(beta)
 
                     csa_back = Q_back/d
                     stability_back = area_back/d
@@ -259,20 +354,42 @@ class CentroidSolidAngleAnalyser(PoseEliminator):
                 csa_back = 0.0
                 stability_back = 0.0
                 crsa_back = 0.0
-
-            ''' Debug plot
-            plt.figure()
-            plt.plot(hull_base[:, 0], hull_base[:, 1], 'k--', lw=1, label='Support Polygon')
-            plt.plot(com_tilted[0], com_tilted[1], 'go', label='Center of Mass')
-            plt.gca().set_aspect('equal')
-            plt.legend()
-            plt.text(0.95, 0.95, 'Q = {:.4f} sr\nStability Area = {:.4f} \nQcrit Sum = {:.4f} sr'.format(Q, area, delta_sum), fontsize=8, transform=plt.gca().transAxes, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-            plt.savefig(f"csa_check_{index:03d}.png", dpi=150)
-            plt.close()
-            '''
+            
             csa_value = csa_base + csa_back
             stability_value = stability_base + stability_back
             crsa_value = max(crsa_base, crsa_back)
+
+            # Debug plot
+            plt.figure()
+            ax = plt.gca()
+
+            # Plot base polygon
+            if hull_base is not None:
+                plt.plot(hull_base[:, 0], hull_base[:, 1], 'k--', lw=1.5, label='Base Support Polygon')
+                plt.plot(com_tilted[0], com_tilted[1], 'go', label='CoM over Base')
+
+            # Plot back polygon (only if it exists and is distinct)
+            if 'hull_back' in locals() and hull_back is not None:
+                plt.plot(hull_back[:, 0], hull_back[:, 1], 'b--', lw=1.5, label='Back Support Polygon')  # YZ projection
+                plt.plot(com_tilted[0], com_tilted[1], 'co', label='CoM over Back')
+
+            # Plot settings
+            ax.set_aspect('equal')
+            plt.legend(loc='best')
+
+            plt.text(
+                0.95, 0.95,
+                'csa = {:.4f} sr\nStability = {:.4f}\ncrsa = {:.4f} sr'.format(csa_value, stability_value, crsa_value),
+                fontsize=8,
+                transform=ax.transAxes,
+                ha='right',
+                va='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+            )
+
+            plt.tight_layout()
+            plt.savefig(f"csa_debug_{index:03d}.png", dpi=150)
+            plt.close()
 
             self.csa_values.append(csa_value)  # compute centroid solid angle for one pose for both back and base
             self.stability_values.append(stability_value)  # compute stability score for one pose for both back and base
