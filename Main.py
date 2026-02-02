@@ -26,7 +26,7 @@ workpiece_names = ['Teil_1', 'Teil_2', 'Teil_3', 'Teil_4', 'Teil_5']
 
 workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl2i','Dl4a','Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl2a','Kl4i','Qf1i','Qf2a','Qf4i','Qk1a','Qk2i','Qk4a','Ql1i','Ql2a','Ql4i','Rf1a','Rf2i','Rf4i','Rf3a','Rk1a','Rk2i','Rk3a','Rk4i','Rl1a','Rl2i','Rl3a','Rl4i']
 print(f"Total workpieces to process: {len(workpiece_names)}")
-#workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl4a','Qf1i','Qf2a','Qf4i','Qk1a','Qk2i','Qk4a','Ql1i','Ql2a','Ql4i','Rf1a','Rf2i','Rf4i','Rk1a','Rk2i','Rk3a','Rk4i','Rl1a','Rl2i','Rl3a','Rl4i']
+workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl4a','Qf1i','Qf2a','Qf4i','Qk1a','Qk2i','Qk4a','Ql1i','Ql2a','Ql4i','Rf1a','Rf2i','Rf4i','Rk1a','Rk2i','Rk3a','Rk4i','Rl1a','Rl2i','Rl3a','Rl4i']
 
 #List of workpieces with rounded features that are likely to appear in the convex hull
 circular_workpiece_names = ['Kf1i','Kf2a','Kf4i','Kk2i','Kk4a','Kl1i','Kl2a','Kl4i','Rl1a','Rf3a','Rl3a','Dk2a','Rl3a','Qk1a','Qf2a','Rk1a']
@@ -35,12 +35,12 @@ circular_workpiece_names = ['Kf1i','Kf2a','Kf4i','Kk2i','Kk4a','Kl1i','Kl2a','Kl
 #workpiece_names =['Rl4i','Ql4i','Qf4i','Df4a','Rk2i']
 #workpiece_names =['Rl2i','Df2i','Dk4i','Dl4a','Qk4a','Rf4i','Rk4i','Rf2i','Dl2i']
 #workpiece_names = ['Kl4i','Kl1i','Kl2a','Rl1a']
-#workpiece_names = ['Kk2i','Kl2a','Kf2a']
-workpiece_names = circular_workpiece_names
+#workpiece_names = ['Kk4a']
+#workpiece_names = circular_workpiece_names
 #workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk4i','Dl1a','Dl4a','Qf1i','Qf4i','Qk2i','Qk4a','Ql2a','Rf2i','Rf4i','Rk2i','Rk4i','Rl2i','Rl3a','Qk1a','Ql1i','Ql4i','Rf1a','Rf3a','Rk1a','Rk3a','Rl4i']
 #workpiece_names = ['Kf4i','Kf2a']
-#workpiece_names = ['Kk1a']
-#workpiece_names = ['Df1a']
+#workpiece_names = ['Kf1i']
+#workpiece_names = ['Dk1i']
 #workpiece_names = ['Rk2i','Rk4i']
 #workpiece_names = ['Kf2a','Kl2a']
 #workpiece_names = ['Kl4i','Kk4a','Kl2a','Kl1i']
@@ -53,7 +53,7 @@ axis_based_cylinder_check = 1  # 0 = off, 1 = on
 eliminator_stability_tolerance = -1.5 #tolerance for center of mass point in polygon test during stability check, negative value means stricter check
 
 alpha_tilt_angle = 20.0  # degrees this is the perfect aero angle
-beta_tilt_angle = 5.0   # degrees this is the biggest angle before the workpiece shifts it's weight onto the other face of the slide in any poses
+beta_tilt_angle = 45.0   # degrees
 
 # Get the workpiece name you want to find poses for
 #workpiece_name = 'Teil_2'
@@ -61,16 +61,16 @@ beta_tilt_angle = 5.0   # degrees this is the biggest angle before the workpiece
 for workpiece_name in workpiece_names:
 
     #print(f"Processing workpiece: {workpiece_name}, is_step_file_centered: {step_file_centered}")    # Use the original STEP file to find the largest cylinder or circle edge
-    step_find_all_cylinders(str(workpiece_path / (workpiece_name + '.STEP')), str(csv_path / (workpiece_name + '_cylinder_properties.csv')))
+    #step_find_all_cylinders(str(workpiece_path / (workpiece_name + '.STEP')), str(csv_path / (workpiece_name + '_cylinder_properties.csv')))
 
     # Convert the STL file to an OBJ file
-    stl_to_obj_converter(str(workpiece_path / (workpiece_name + '.STL')), str(workpiece_path / (workpiece_name + '.obj')), 1, 1.0)
+    #stl_to_obj_converter(str(workpiece_path / (workpiece_name + '.STL')), str(workpiece_path / (workpiece_name + '.obj')), 1, 1.0)
 
     # Convert the OBJ file to a PLY file
     # obj_to_ply_converter(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '.ply')))
 
     # Extract the convex hull of the 3D model
-    obj_convex_hull_extractor(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '_convex_hull.obj')))
+    #obj_convex_hull_extractor(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '_convex_hull.obj')))
 
     # Initialize the PoseFinder with the convex hull OBJ file and define a tolerance for grouping rotations
     pose_finder = PoseFinder(str(workpiece_path / (workpiece_name + '_convex_hull.obj')), str(workpiece_path / (workpiece_name + '.obj')), 1e-5, step_file_centered)
@@ -98,9 +98,9 @@ for workpiece_name in workpiece_names:
         pose_cylinder_group = [0] * len(candidate_rotations)
     
     if workpiece_name == 'Kk1a':
-        eliminator_stability_tolerance = 1  # slightly looser stability tolerance for kk1a
+        eliminator_stability_tolerance = 0  # slightly looser stability tolerance for kk1a
     else:
-        eliminator_stability_tolerance = -1.5  # normal stability tolerance for other workpieces
+        eliminator_stability_tolerance = -2  # normal stability tolerance for other workpieces
 
     # Initialize the PoseEliminator with the convex hull OBJ file and self OBJ file
     pose_eliminator = PoseEliminator(
@@ -128,7 +128,7 @@ for workpiece_name in workpiece_names:
     pose_eliminator.remove_unstable_poses(alpha_tilt_angle,beta_tilt_angle)
 
     # Find unique poses by considering symmetry with an adjustable tolerance, this is set for workpieces with feature sizes between 0.1 and 0.03 cm (I still think this is programmed weirdly)
-    symmetrically_unique_rotations = pose_finder.symmetry_handler(pose_eliminator.get_stable_rotations(),1)
+    symmetrically_unique_rotations = pose_finder.symmetry_handler(pose_eliminator.get_stable_rotations(),1.5)
 
     # Compute centroid solid angle scores for the realised poses
     centroid_solid_angle_analyser = CentroidSolidAngleAnalyser(symmetrically_unique_rotations, 
@@ -140,7 +140,7 @@ for workpiece_name in workpiece_names:
                                                                pose_eliminator.get_pose_cylinder_axis_direction(),
                                                                1e-2)
     
-    centroid_solid_angle_analyser.compute_scores()
+    centroid_solid_angle_analyser.compute_scores(alpha_tilt=alpha_tilt_angle,beta_tilt=beta_tilt_angle)
     centroid_solid_angle_scores = centroid_solid_angle_analyser.csa_scores
     stability_scores = centroid_solid_angle_analyser.stability_scores
     critical_solid_angle_scores = centroid_solid_angle_analyser.crsa_scores

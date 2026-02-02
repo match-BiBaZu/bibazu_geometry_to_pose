@@ -82,7 +82,7 @@ class PoseEliminator(PoseFinder):
         path = Path(hull_points)
 
         if self.pose_types[index] == 3:
-            is_inside = path.contains_point(center_mass, radius=2)  # looser tolerance for those pesky rolling cylinder poses
+            is_inside = path.contains_point(center_mass, radius=0)  # looser tolerance for those pesky rolling cylinder poses
         else:
             is_inside = path.contains_point(center_mass, radius=self.stability_tolerance) # small negative radius to be stricter on stability and make sure the center of mass is well within the support polygon (fixes Rl4i behaviour)
         #print(f"radius: {self.stability_tolerance}")
@@ -102,6 +102,7 @@ class PoseEliminator(PoseFinder):
             plt.close()
         '''
         return is_inside
+    
 
     def _is_stable_by_center_mass(self, rotation_vector: np.ndarray, index: int,
                               alpha_tilt: float, beta_tilt: float) -> bool:
@@ -124,43 +125,44 @@ class PoseEliminator(PoseFinder):
 
         # Step 2: Identify contact vertices at bottom plane (min-Z)
         verts = rotated_mesh.vertices
-        z_coords = verts[:, 2]
-        min_z = np.min(z_coords)
-        contact_idx = np.where(np.abs(z_coords - min_z) < self.tolerance)[0]
-        contact_vertices = verts[contact_idx]
+        min_z = np.min(verts[:, 2])  # base plane
+        min_x = np.min(verts[:, 0])  # back plane
 
-        if len(contact_vertices) < 3:
-            return False
-
-        # Step 3: Tilt the system so that the slide plane becomes horizontal
+        # Step 3: Tilt the system so that the center of mass becomes offset by the tilt angle
         alpha = np.radians(alpha_tilt)
         beta = np.radians(beta_tilt)
 
-        R_tilt = R.from_euler('xy', [-alpha, -beta]).as_matrix()  # inverse tilt
-        contact_tilted = contact_vertices @ R_tilt.T
-        com_tilted = rotated_mesh.center_mass @ R_tilt.T
+        if self.pose_types == 3:
+            R_tilt = R.from_euler('xy', [alpha, 0]).as_matrix()  # inverse tilt
+        else:
+            R_tilt = R.from_euler('xy', [alpha, -beta]).as_matrix()  # inverse tilt
 
-        # Step 4: Project to XY plane of tilted frame
-        contact_2d = np.unique(contact_tilted[:, :2], axis=0)
-        com_xy = com_tilted[:2]
-        com_y = com_xy[1]  # for Y-span check
+        verts_tilted = verts @ R_tilt.T
+        com_tilted   = rotated_mesh.center_mass @ R_tilt.T
 
-        if contact_2d.shape[0] < 3:
-            return False
+        #Step 4: find the location of the verticies which are touching the back and base planes before the tilt is applied
+        base_idx = np.where(np.abs(verts[:, 2] - min_z) < self.tolerance)[0]
+        back_idx = np.where(np.abs(verts[:, 0] - min_x) < self.tolerance)[0]
 
-        # Step 5: Convex hull + polygon check
-        try:
-            hull = ConvexHull(contact_2d)
-            hull_points = contact_2d[hull.vertices]
-        except:
-            return False
+        # use the location of these verticies to extract the tilted polygons
+        base_contact_tilt = verts_tilted[base_idx]
+        back_contact_tilt = verts_tilted[back_idx]
 
-        if not np.allclose(hull_points[0], hull_points[-1]): #close polygon if not already closed
-            hull_points = np.vstack([hull_points, hull_points[0]])
-        path = Path(hull_points)
+        #Step 5: Do inside 2D convex hull projection check for both the back and base planes
+        if len(np.unique(base_contact_tilt[:, :2],axis= 0)) >= 3:
+            hull_base = self.find_contact_polygon(base_contact_tilt[:, :2], min_z)
+            path_base = Path(hull_base[:, :2])
+            inside_base_polygon = path_base.contains_point(com_tilted, radius=self.stability_tolerance)
+        else:
+            inside_base_polygon = False
 
-        inside_polygon = path.contains_point(com_xy, radius=self.stability_tolerance)
-
+        if (beta_tilt > 0.0) and (len(np.unique(back_contact_tilt[:, :2],axis=0)) >= 3):
+            hull_back = self.find_contact_polygon(back_contact_tilt[:, :2], min_z)
+            path_back = Path(hull_back[:, :2])
+            inside_back_polygon = path_back.contains_point(com_tilted, radius=self.stability_tolerance)
+        else:
+            inside_back_polygon = False
+        
         # Step 6: Y-span check at the back (min-X) face
         x_coords = verts[:, 0]
         min_x = np.min(x_coords)
@@ -175,7 +177,7 @@ class PoseEliminator(PoseFinder):
             y_min, y_max = np.min(y_coords_back), np.max(y_coords_back)
             com_y = com_tilted[1]
             if self.pose_types[index] == 2:
-                inside_y_span = (y_min - 2) <= com_y <= (y_max + 2)  # looser tolerance for those pesky base cylinder poses
+                inside_y_span = (y_min - 2.5) <= com_y <= (y_max + 2.5)  # looser tolerance for those pesky base cylinder poses
             else:
                 inside_y_span = (y_min - self.tolerance) <= com_y <= (y_max + self.tolerance)
         
@@ -196,13 +198,36 @@ class PoseEliminator(PoseFinder):
             plt.close()
         '''
 
-        return inside_polygon and inside_y_span
+        return (inside_back_polygon or inside_base_polygon) and inside_y_span
 
-    
     # use a tolerance-aware modulo check
     def _is_aligned(self, value: float, step: float, tol: float) -> bool:
         # distance to nearest multiple of step
         return min(abs((value % step)), abs(step - (value % step))) <= tol
+    
+    def find_contact_polygon(self, contact_tilted_in_plane, min_z):
+
+        # contact_tilted: (M,3)
+        contact_plane = np.unique(contact_tilted_in_plane, axis=0)
+
+        if contact_plane.shape[0] < 3:
+            hull_3d = None
+
+        # convex hull in 2D
+        hull = ConvexHull(contact_plane)
+        hull_xy = contact_plane[hull.vertices]        # (N,2)
+
+        # lift polygon back to 3D (resting plane)
+        hull_3d = np.column_stack([
+            hull_xy[:, 0],
+            hull_xy[:, 1],
+            np.full(len(hull_xy), min_z)
+        ])
+
+        # close polygon
+        hull_3d = np.vstack([hull_3d, hull_3d[0]])  # (N+1,3)
+
+        return hull_3d
     
     def get_stable_rotations(self):
         return self.stable_rotations

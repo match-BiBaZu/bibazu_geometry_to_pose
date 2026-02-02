@@ -2,11 +2,11 @@ import trimesh
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from scipy.spatial import ConvexHull
-from PoseFinder import PoseFinder
+from PoseEliminator import PoseEliminator
 from matplotlib.path import Path
 import matplotlib.pyplot as plt
 
-class CentroidSolidAngleAnalyser(PoseFinder):
+class CentroidSolidAngleAnalyser(PoseEliminator):
     def __init__(self, poses = None, convex_hull_obj_file=None, obj_file=None, pose_types=None, pose_cylinder_radius=None, pose_cylinder_axis_origin=None, pose_cylinder_axis_direction=None, tolerance=1e-5):
         super().__init__(convex_hull_obj_file, obj_file, tolerance)
         self.poses = poses
@@ -40,7 +40,7 @@ class CentroidSolidAngleAnalyser(PoseFinder):
         )
 
         return 2.0 * np.arctan2(num, den)
-
+    
     def solid_angle_polygon(self,hull_points, point):
         """
         Solid angle (steradians) of a planar polygon seen from `point`.
@@ -67,60 +67,56 @@ class CentroidSolidAngleAnalyser(PoseFinder):
         
         return omega
     
-    
-    import numpy as np
+    def critical_solid_angle(self,hull_3d, com_tilted, Q, x_edge_verticies):
+        # critical solid angle (Qcrit)
+        delta_sum = 0.0
 
+        N = len(hull_3d) - 1  # last point duplicates the first
 
-    def cylinder_side_solid_angle_continuous(self,center, axis, R, L, com,
-                                            g_dir=np.array([0.0, 0.0, -1.0]),
-                                            n_theta=720, n_z=240):
-        """
-        Solid angle of the *lower half* of the lateral surface of a cylinder
-        as seen from `com`, computed by continuous surface integral.
+        #x_edge = hull_3d[:, 0].min()
+        #i_back_edge = np.where(np.isin(hull_idx_in_verts, edge_idx))[0]
 
-        Assumes the cylinder is resting on a plane under gravity direction g_dir.
-        """
-        a = np.linalg.norm(np.asarray(axis, float))
-        print('Axis direction:', a)
-        c0 = np.asarray(center, float)
-        p = np.asarray(com, float)
-        g = np.linalg.norm(np.asarray(g_dir, float))  # down
+        i_back_edge = [i for i, v in enumerate(hull_3d[:-1,:2]) if any(np.all(v == e) for e in x_edge_verticies[:,:2])]
 
-        # Build radial basis e1,e2 in plane perpendicular to axis
-        # e1 points toward "down" projected into the cross-section plane.
-        g_perp = g - np.dot(g, a) * a
-        if np.linalg.norm(g_perp) < 1e-9:
-            raise ValueError("Axis parallel to gravity; 'side resting' not defined.")
-        e1 = np.linalg.norm((g_perp))          # points toward down in cross-section
-        e2 = np.linalg.norm((np.cross(a, e1))) # completes right-handed basis
+        for i in range(N):
+            if i not in i_back_edge:# skip edge poses as they dont allow tipping
+                v0 = hull_3d[i]
+                v1 = hull_3d[i + 1]
 
-        # Parameter grids
-        thetas = np.linspace(-np.pi/2, np.pi/2, n_theta)  # lower half: radial dot g >= 0
-        zs = np.linspace(-L/2, L/2, n_z)
+                # midpoint of the edge
+                edge_mid = 0.5 * (v0 + v1)
 
-        dtheta = thetas[1] - thetas[0]
-        dz = zs[1] - zs[0]
+                z_crit = np.linalg.norm(com_tilted - edge_mid) # distance from COM to edge midpoint in same plane projection
+                print(z_crit)
+                Q_crit = self.solid_angle_polygon(hull_3d, [com_tilted[0],com_tilted[1],z_crit]) # compute tipping solid angle for one edge
 
-        Omega = 0.0
-        for z in zs:
-            for th in thetas:
-                n = np.cos(th) * e1 + np.sin(th) * e2          # outward normal on lateral surface
-                x = c0 + R * n + z * a                         # point on surface
-                r = x - p
-                rn = np.dot(r, n)
-                rnorm = np.linalg.norm(r)
-                # dA = R dtheta dz
-                Omega += (rn / (rnorm**3)) * (R * dtheta * dz)
+                delta = Q - Q_crit
+                
+                '''
+                plt.figure()
+                plt.plot(hull_3d[:, 0], hull_3d[:, 1], 'k--', lw=1, label='Support Polygon')
+                plt.plot(edge_mid[0], edge_mid[1], 'go', label='Center of Mass')
+                plt.gca().set_aspect('equal')
+                plt.legend()
+                plt.text(0.95, 0.95, 'Q = {:.4f} sr\nStability Area = {:.4f} \nQcrit Sum = {:.4f} sr\n'.format(Q, area, delta_sum), fontsize=8, transform=plt.gca().transAxes, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+                plt.savefig(f"csa_check_{index:03d}.png", dpi=150)
+                plt.close()
+            '''
+            else:
+                delta = Q # maximise non tipping poses Q crit is 0 as the edge poses dont tip
 
-        # Optional: "height" to tangent plane at lowest point (for CSA score Omega/h)
-        up = -g
-        p0 = c0 - R * e1  # lowest point on cylinder (along down direction)
-        h = abs(np.dot(p - p0, up))
+            delta_sum += max(0.0, delta)
 
-        return Omega, h, Omega / (h + 1e-12)
+        return delta_sum
 
-    
-    def compute_scores(self):
+    def safe_normalize_to_percent(values, total, eps=1e-12):
+        values = np.asarray(values, dtype=float)
+        if total <= eps:
+            return np.zeros_like(values)
+        return (values / (total + eps)) * 100.0    
+        
+
+    def compute_scores(self, alpha_tilt, beta_tilt):
         """
         calculates stability scores based on centroid solid angle method, stability score method and critical solid angle method from:
         centroid solid angle from: B. K. A. NGOI , L. E. N. LIM & S. S. G. LEE (1995) Analysing the natural resting aspects of a complex part, International Journal of Production Research, 33:11, 3163-3172,
@@ -130,6 +126,7 @@ class CentroidSolidAngleAnalyser(PoseFinder):
 
         alpha_tilt – CCW tilt (deg) around X-axis (front-back)
         """
+
 
         non_symmetrical_csa_values_sum = 0.0
         non_symmetrical_stability_values_sum = 0.0
@@ -146,107 +143,126 @@ class CentroidSolidAngleAnalyser(PoseFinder):
             T_pose[:3, :3] = rotation.as_matrix()
             rotated_mesh.apply_transform(T_pose)
 
-            # Step 2: Identify contact vertices at bottom plane (min-Z)
+
+            # Step 3: Indentify contact verticies at base and back plane
             verts = rotated_mesh.vertices
-            z_coords = verts[:, 2]
-            min_z = np.min(z_coords)
-            contact_idx = np.where(np.abs(z_coords - min_z) < self.tolerance)[0]
-            contact_vertices = verts[contact_idx]
+            min_z = np.min(verts[:, 2])  # base plane
+            min_x = np.min(verts[:, 0])  # back plane
+            
+            # Step 3: Tilt the system so that the center of mass becomes offset by the tilt angle
+            alpha = np.radians(alpha_tilt)
+            beta = np.radians(beta_tilt)
 
-            if len(contact_vertices) < 3:
-                self.csa_values.append(0.0)
+            if self.pose_types == 3:
+                R_tilt = R.from_euler('xy', [alpha, 0]).as_matrix()  # inverse tilt
+            else:
+                R_tilt = R.from_euler('xy', [alpha, -beta]).as_matrix()  # inverse tilt
 
-            # Step 3: Tilt the system so that the slide plane becomes horizontal
-            #alpha = np.radians(alpha_tilt)
-            #beta = np.radians(beta_tilt)
+            verts_tilted = verts @ R_tilt.T
+            com_tilted   = rotated_mesh.center_mass @ R_tilt.T
 
-            R_tilt = R.from_euler('xy', [0, 0]).as_matrix()  # inverse tilt
-            contact_tilted = contact_vertices @ R_tilt.T
-            com_tilted = rotated_mesh.center_mass @ R_tilt.T
+            #find the location of the verticies which are touching the back and base planes before the tilt is applied
+            base_idx = np.where(np.abs(verts[:, 2] - min_z) < self.tolerance)[0]
+            back_idx = np.where(np.abs(verts[:, 0] - min_x) < self.tolerance)[0]
+            
+            #find the location of the verticies which are touching the edge before the tilt is applied
+            edge_idx = np.intersect1d(base_idx, back_idx)
 
-            # contact_tilted: (M,3)
-            contact_xy = np.unique(contact_tilted[:, :2], axis=0)
+            # use the location of these verticies to extract the tilted polygons
+            base_contact_tilt = verts_tilted[base_idx]
+            back_contact_tilt = verts_tilted[back_idx]
 
-            if contact_xy.shape[0] < 3:
-                self.csa_values.append(0.0)
+            edge_contact_tilt = verts_tilted[edge_idx]
 
-            # convex hull in 2D
-            hull = ConvexHull(contact_xy)
-            hull_xy = contact_xy[hull.vertices]        # (N,2)
+            if len(np.unique(base_contact_tilt,axis= 0)) >= 3:
+                # create convex hull projection of tilted base convex hull onto the base xy plane
+                hull_base = super().find_contact_polygon(base_contact_tilt[:, :2], min_z)
 
-            # lift polygon back to 3D (resting plane)
-            hull_3d = np.column_stack([
-                hull_xy[:, 0],
-                hull_xy[:, 1],
-                np.full(len(hull_xy), min_z)
-            ])
+                path_base = Path(hull_base[:, :2])
 
-            # close polygon
-            hull_3d = np.vstack([hull_3d, hull_3d[0]])  # (N+1,3)
+                inside_base_polygon = path_base.contains_point(com_tilted, radius=self.stability_tolerance)
 
-            # compute surface area of the polygonal face
-            # points: (N,2), ordered, not closed
-            #if self.pose_types[index] == 3:
-            #    y_min, y_max = np.min(hull_3d[:, 1]), np.max(hull_3d[:, 1])
-            #    length = y_max - y_min
-            #    area = np.pi * self.pose_cylinder_radius[index] * length
-            #else:
+                if  inside_base_polygon:
+                    x = hull_base[:, 0]
+                    y = hull_base[:, 1]
 
-            x = hull_3d[:, 0]
-            y = hull_3d[:, 1]
-            area =  0.5 * np.abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+                    area_base =  0.5 * np.abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
 
-            #if self.pose_types[index] == 3:
-            #    print('Computing solid angle of cylinder side face')
-            #    y_min, y_max = np.min(hull_3d[:, 1]), np.max(hull_3d[:, 1])
-            #    y_center = 0.5 * (y_min + y_max)
-            #    Q = self.cylinder_side_solid_angle_continuous([self.pose_cylinder_axis_origin[index][0], y_center, self.pose_cylinder_axis_origin[index][2]],
-            #                                                   self.pose_cylinder_axis_direction[index],
-            #                                                   self.pose_cylinder_radius[index],
-            #                                                   y_max - y_min,
-            #                                                   com_tilted,
-            #                                                   g_dir=np.array([0,0,-1]))  # if world z is up)
-            #else:
+                    Q_base = self.solid_angle_polygon(hull_base, com_tilted)
+
+                    # critical solid angle
+                    delta_base = self.critical_solid_angle(hull_base, com_tilted, Q_base, edge_contact_tilt)
+
+                    # height (h)
+                    A_base = np.c_[base_contact_tilt[:,0], base_contact_tilt[:,1], np.ones(len(base_contact_tilt))]
+
+                    #solve least squares to find the location on plane directly below com_tilted
+                    a_base, b_base, c_base = np.linalg.lstsq(A_base, base_contact_tilt[:,2], rcond=None)[0]
+
+                    # z of plane directly under COM (same x,y)
+                    z_base = a_base*com_tilted[0] + b_base*com_tilted[1] + c_base
+
+                    h = abs(com_tilted[2] - z_base)
+
+                    csa_base = Q_base/h
+                    crsa_base = delta_base/h
+                    stability_base = area_base/h
+                else:
+                    csa_base = 0.0
+                    crsa_base = 0.0
+                    stability_base = 0.0
+            else:
+                csa_base = 0.0
+                crsa_base = 0.0
+                stability_base = 0.0
+
+            # calculate back stability values when COM shifts to over the back plane
+            if (beta_tilt > 0.0) and (len(np.unique(back_contact_tilt,axis=0)) >= 3):
                 
-                
-            Q = self.solid_angle_polygon(hull_3d, com_tilted)
+                # create convex hull projection of tilted back convex hull onto the base xy plane
+                hull_back = super().find_contact_polygon(back_contact_tilt[:, :2], min_z)
 
-            # critical solid angle (Qcrit)
-            delta_sum = 0.0
+                path_back = Path(hull_back[:, :2])
 
-            N = len(hull_3d) - 1  # last point duplicates the first
+                inside_back_polygon = path_back.contains_point(com_tilted, radius=self.stability_tolerance)
 
-            for i in range(N):
-                v0 = hull_3d[i]
-                v1 = hull_3d[i + 1]
+                if inside_back_polygon:
+                    x_back = hull_back[:, 0]
+                    y_back = hull_back[:, 1]
 
-                # midpoint of the edge
-                edge_mid = 0.5 * (v0 + v1)
+                    area_back =  0.5 * np.abs(np.dot(x_back, np.roll(y_back, -1)) - np.dot(y_back, np.roll(x_back, -1)))
 
-                z_crit = len(com_tilted - edge_mid) # distance from COM to edge midpoint in same plane projection
-                print(z_crit)
-                Q_crit = self.solid_angle_polygon(hull_3d, [com_tilted[0],com_tilted[1],z_crit]) # compute tipping solid angle for one edge
+                    Q_back = self.solid_angle_polygon(hull_back, com_tilted)
 
-                delta = Q - Q_crit
+                    # critical solid angle (Qcrit)
+                    delta_back = self.critical_solid_angle(hull_back, com_tilted, Q_back, edge_contact_tilt)
 
-                delta_sum += max(0.0, delta)
-                '''
-                plt.figure()
-                plt.plot(hull_3d[:, 0], hull_3d[:, 1], 'k--', lw=1, label='Support Polygon')
-                plt.plot(edge_mid[0], edge_mid[1], 'go', label='Center of Mass')
-                plt.gca().set_aspect('equal')
-                plt.legend()
-                plt.text(0.95, 0.95, 'Q = {:.4f} sr\nStability Area = {:.4f} \nQcrit Sum = {:.4f} sr\n'.format(Q, area, delta_sum), fontsize=8, transform=plt.gca().transAxes, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-                plt.savefig(f"csa_check_{index:03d}.png", dpi=150)
-                plt.close()
-                '''
+                    # depth (d)
+                    A_back = np.c_[back_contact_tilt[:,0], back_contact_tilt[:,1], np.ones(len(back_contact_tilt))]
 
-            # height (h)
-            h = abs(com_tilted[2] - min_z)
+                    #solve least squares to find the location on plane directly below com_tilted
+                    a_back, b_back, c_back = np.linalg.lstsq(A_back, back_contact_tilt[:,2], rcond=None)[0]
+
+                    # z of plane directly under COM (same x,y)
+                    z_back = a_back*com_tilted[0] + b_back*com_tilted[1] + c_back
+
+                    d = abs(com_tilted[0] - z_back)
+
+                    csa_back = Q_back/d
+                    stability_back = area_back/d
+                    crsa_back = delta_back/d
+                else:
+                    csa_back = 0.0
+                    stability_back = 0.0
+                    crsa_back = 0.0
+            else:
+                csa_back = 0.0
+                stability_back = 0.0
+                crsa_back = 0.0
 
             ''' Debug plot
             plt.figure()
-            plt.plot(hull_3d[:, 0], hull_3d[:, 1], 'k--', lw=1, label='Support Polygon')
+            plt.plot(hull_base[:, 0], hull_base[:, 1], 'k--', lw=1, label='Support Polygon')
             plt.plot(com_tilted[0], com_tilted[1], 'go', label='Center of Mass')
             plt.gca().set_aspect('equal')
             plt.legend()
@@ -254,19 +270,22 @@ class CentroidSolidAngleAnalyser(PoseFinder):
             plt.savefig(f"csa_check_{index:03d}.png", dpi=150)
             plt.close()
             '''
+            csa_value = csa_base + csa_back
+            stability_value = stability_base + stability_back
+            crsa_value = max(crsa_base, crsa_back)
 
-            self.csa_values.append(Q / h)  # compute centroid solid angle for one pose
-            self.stability_values.append(area / h)  # compute stability score for one pose
-            self.crsa_values.append(delta_sum / h)  # compute critical solid angle score for one pose
+            self.csa_values.append(csa_value)  # compute centroid solid angle for one pose for both back and base
+            self.stability_values.append(stability_value)  # compute stability score for one pose for both back and base
+            self.crsa_values.append(crsa_value) # compute critical solid angle and pick bigger value (not sure if 100% right)
 
             if index not in seen_indicies:
                 seen_indicies.append(index)
-                non_symmetrical_csa_values_sum = Q / h + non_symmetrical_csa_values_sum
-                non_symmetrical_stability_values_sum = area / h + non_symmetrical_stability_values_sum
-                non_symmetrical_crsa_values_sum = delta_sum / h + non_symmetrical_crsa_values_sum
+                non_symmetrical_csa_values_sum = csa_value + non_symmetrical_csa_values_sum
+                non_symmetrical_stability_values_sum = stability_value + non_symmetrical_stability_values_sum
+                non_symmetrical_crsa_values_sum = crsa_value + non_symmetrical_crsa_values_sum
             else:
                 continue
 
-        self.csa_scores = (np.array(self.csa_values) / non_symmetrical_csa_values_sum) * 100
-        self.stability_scores = (np.array(self.stability_values) / non_symmetrical_stability_values_sum)*100
-        self.crsa_scores = (np.array(self.crsa_values) / non_symmetrical_crsa_values_sum)*100
+        self.csa_scores = (np.array(self.csa_values) / non_symmetrical_csa_values_sum) * 100 
+        self.stability_scores = (np.array(self.stability_values) / non_symmetrical_stability_values_sum)*100 
+        self.crsa_scores = (np.array(self.crsa_values) / non_symmetrical_crsa_values_sum)*100 

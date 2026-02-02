@@ -365,7 +365,7 @@ class PoseVisualizer:
         stable = self.stability_scores[indices[0]]
 
         text = f"CSA: {centroid:.2f}%\n"
-        text += f"CSRA: {critical:.2f}%\n"
+        text += f"CRSA: {critical:.2f}%\n"
         text += f"Stability: {stable:.2f}%"
 
 
