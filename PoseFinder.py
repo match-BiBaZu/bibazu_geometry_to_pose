@@ -15,6 +15,7 @@ class PoseFinder:
         :param tolerance: Numerical tolerance for grouping rotations.
         :raises ValueError: If the mesh or convex hull meshes are empty or not initialized.
         """
+
         self.obj_stem = Path(obj_file).stem
 
         # Initialize a numerical tolerance for grouping

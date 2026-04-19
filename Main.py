@@ -24,39 +24,27 @@ csv_path = script_dir / 'csv_outputs'
 
 workpiece_names = ['Teil_1', 'Teil_2', 'Teil_3', 'Teil_4', 'Teil_5']
 
-workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl2i','Dl4a','Kf1i','Kf2a','Kf4i','Kk1a','Kk2i','Kk4a','Kl1i','Kl2a','Kl4i','Qf1i','Qf2a','Qf4i','Qk1a','Qk2i','Qk4a','Ql1i','Ql2a','Ql4i','Rf1a','Rf2i','Rf4i','Rf3a','Rk1a','Rk2i','Rk3a','Rk4i','Rl1a','Rl2i','Rl3a','Rl4i']
-print(f"Total workpieces to process: {len(workpiece_names)}")
-workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl4a','Qf1i','Qf2a','Qf4i','Qk1a','Qk2i','Qk4a','Ql1i','Ql2a','Ql4i','Rf1a','Rf2i','Rf4i','Rk1a','Rk2i','Rk3a','Rk4i','Rl1a','Rl2i','Rl3a','Rl4i']
+workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl2i','Dl4a','Kf1i','Kf2a','Kf4i','Kk2i','Kk1a','Kk4a','Kl1i','Kl2a','Kl4i','Qf1i','Qf2a','Qf4i','Qk1a','Qk2i','Qk4a','Ql1i','Ql2a','Ql4i','Rf1a','Rf2i','Rf4i','Rf3a','Rk1a','Rk2i','Rk3a','Rk4i','Rl1a','Rl2i','Rl3a','Rl4i']
 
-#List of workpieces with rounded features that are likely to appear in the convex hull
-circular_workpiece_names = ['Kf1i','Kf2a','Kf4i','Kk2i','Kk4a','Kl1i','Kl2a','Kl4i','Rl1a','Rf3a','Rl3a','Dk2a','Rl3a','Qk1a','Qf2a','Rk1a']
-
-#workpiece_names =['Df1a','Df4a','Df2i']
-#workpiece_names =['Rl4i','Ql4i','Qf4i','Df4a','Rk2i']
-#workpiece_names =['Rl2i','Df2i','Dk4i','Dl4a','Qk4a','Rf4i','Rk4i','Rf2i','Dl2i']
-#workpiece_names = ['Kl4i','Kl1i','Kl2a','Rl1a']
-#workpiece_names = ['Kk4a']
-#workpiece_names = circular_workpiece_names
-#workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk4i','Dl1a','Dl4a','Qf1i','Qf4i','Qk2i','Qk4a','Ql2a','Rf2i','Rf4i','Rk2i','Rk4i','Rl2i','Rl3a','Qk1a','Ql1i','Ql4i','Rf1a','Rf3a','Rk1a','Rk3a','Rl4i']
-#workpiece_names = ['Kf4i','Kf2a']
+#workpiece_names = ['Df1a','Df2i','Df4a','Dk1i','Dk2a','Dk4i','Dl1a','Dl4a','Qf1i','Qf2a','Qf4i','Qk1a','Qk2i','Qk4a','Ql1i','Ql2a','Ql4i','Rf1a','Rf2i','Rf4i','Rk1a','Rk2i','Rk3a':'Kf2a']
 #workpiece_names = ['Kf1i']
 #workpiece_names = ['Dk1i']
 #workpiece_names = ['Rk2i','Rk4i']
-#workpiece_names = ['Kf2a','Kl2a']
-#workpiece_names = ['Kl4i','Kk4a','Kl2a','Kl1i']
+#workpiece_names = ['Kk4a']
+#workpiece_names = ['Kl4i,'Kk4a,'Kl2a,'Kl1i']
+workpiece_names = ['Qf1i','Qf4i']
 # is the step file origin at the center of mass of its convex hull? 0 = no, 1 = yes, when no make sure the step files origin is at the corner of a workpiece
 step_file_centered = 0
 
 # location of axes points or perpedicular origin distance based cylinder check switch (usually 1, except for kk2i which uses a crude distance check)
 axis_based_cylinder_check = 1  # 0 = off, 1 = on
 
-eliminator_stability_tolerance = -1.5 #tolerance for center of mass point in polygon test during stability check, negative value means stricter check
+eliminator_stability_tolerance = -1 #tolerance for center of mass point in polygon test during stability check, negative value means stricter check
 
-alpha_tilt_angle = 20.0  # degrees this is the perfect aero angle
-beta_tilt_angle = 45.0   # degrees
+stability_pose_likelihood_threshold = 0.05 # threshold for likelihood to be considered stable, between 0 and 1
 
-# Get the workpiece name you want to find poses for
-#workpiece_name = 'Teil_2'
+alpha_tilt_angle = 20.0  # degrees this is the perfect aero angle/ maximal tilt of the physical test stand
+beta_tilt_angle = 45.0   # degrees of the slide tilt (NEEDS TO BE OPTIMISED BASED ON WORKPIECE)
 
 for workpiece_name in workpiece_names:
 
@@ -100,7 +88,7 @@ for workpiece_name in workpiece_names:
     if workpiece_name == 'Kk1a':
         eliminator_stability_tolerance = 0  # slightly looser stability tolerance for kk1a
     else:
-        eliminator_stability_tolerance = -2  # normal stability tolerance for other workpieces
+        eliminator_stability_tolerance = -1  # normal stability tolerance for other workpieces
 
     # Initialize the PoseEliminator with the convex hull OBJ file and self OBJ file
     pose_eliminator = PoseEliminator(
@@ -128,16 +116,17 @@ for workpiece_name in workpiece_names:
     pose_eliminator.remove_unstable_poses(alpha_tilt_angle,beta_tilt_angle)
 
     # Find unique poses by considering symmetry with an adjustable tolerance, this is set for workpieces with feature sizes between 0.1 and 0.03 cm (I still think this is programmed weirdly)
-    symmetrically_unique_rotations = pose_finder.symmetry_handler(pose_eliminator.get_stable_rotations(),1.5)
+    symmetrically_unique_rotations = pose_finder.symmetry_handler(pose_eliminator.stable_rotations,1.5)
 
-    # Compute centroid solid angle scores for the realised poses
+    # Compute centroid solid angle scores for the realised poses (first sweep)
     centroid_solid_angle_analyser = CentroidSolidAngleAnalyser(symmetrically_unique_rotations, 
                                                                str(workpiece_path / (workpiece_name + '_convex_hull.obj')), 
                                                                str(workpiece_path / (workpiece_name + '.obj')), 
-                                                               pose_eliminator.get_pose_types(), 
-                                                               pose_eliminator.get_pose_cylinder_radius(),
-                                                               pose_eliminator.get_pose_cylinder_axis_origin(),
-                                                               pose_eliminator.get_pose_cylinder_axis_direction(),
+                                                               pose_eliminator.pose_types, 
+                                                               pose_eliminator.pose_cylinder_radius,
+                                                               pose_eliminator.pose_cylinder_axis_origin,
+                                                               pose_eliminator.pose_cylinder_axis_direction,
+                                                               False, #is_symmetry_pose_reducing flag set to false but can be set to true if the symmetry handler is used with a tolerance that reduces the number of poses
                                                                1e-2)
     
     centroid_solid_angle_analyser.compute_scores(alpha_tilt=alpha_tilt_angle,beta_tilt=beta_tilt_angle)
@@ -145,12 +134,15 @@ for workpiece_name in workpiece_names:
     stability_scores = centroid_solid_angle_analyser.stability_scores
     critical_solid_angle_scores = centroid_solid_angle_analyser.crsa_scores
 
+    # Remove unstable poses below the likelihood threshold
+    #pose_eliminator.remove_unstable_poses_below_threshold(centroid_solid_angle_scores, critical_solid_angle_scores, stability_scores, stability_pose_likelihood_threshold)
+
     pose_finder.write_candidate_rotations_to_file(symmetrically_unique_rotations, 
-                                                  pose_eliminator.get_pose_types(),
-                                                  pose_eliminator.get_pose_cylinder_radius(), 
-                                                  pose_eliminator.get_pose_cylinder_axis_origin(),
-                                                  pose_eliminator.get_pose_cylinder_axis_direction(),
-                                                  pose_eliminator.get_pose_cylinder_group(),
+                                                  pose_eliminator.pose_types,
+                                                  pose_eliminator.pose_cylinder_radius, 
+                                                  pose_eliminator.pose_cylinder_axis_origin,
+                                                  pose_eliminator.pose_cylinder_axis_direction,
+                                                  pose_eliminator.pose_cylinder_group,
                                                   critical_solid_angle_scores,
                                                   centroid_solid_angle_scores,
                                                   stability_scores,
@@ -161,7 +153,12 @@ for workpiece_name in workpiece_names:
     #pose_finder.write_pose_shadows_to_file(symmetrically_unique_rotations,xy_shadows)
 
     # Initialize the PoseVisualizer with the original and convex hull OBJ files and valid rotations
-    pose_visualizer = PoseVisualizer(str(workpiece_path / (workpiece_name + '.obj')), str(workpiece_path / (workpiece_name + '_convex_hull.obj')),symmetrically_unique_rotations, pose_eliminator.get_stable_shadows(), pose_eliminator.get_stable_axis_parameters(),critical_solid_angle_scores,centroid_solid_angle_scores,stability_scores)
+    pose_visualizer = PoseVisualizer(str(workpiece_path / (workpiece_name + '.obj')), 
+                                     str(workpiece_path / (workpiece_name + '_convex_hull.obj')),
+                                     symmetrically_unique_rotations, pose_eliminator.stable_shadows, 
+                                     pose_eliminator.stable_axis_parameters,
+                                     critical_solid_angle_scores,
+                                     centroid_solid_angle_scores,stability_scores)
 
     # Visualize the valid poses
     pose_visualizer.visualize_rotations(workpiece_name)

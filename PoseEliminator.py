@@ -9,6 +9,7 @@ import trimesh
 class PoseEliminator(PoseFinder):
     def __init__(self, convex_hull_obj_file: str, self_obj_file: str, tolerance: float = 1e-5,
                      stability_tolerance: float = 1e-3,
+                     liklelihood_threshold: float = 0.05,
                      stable_rotations=None, stable_shadows=None, stable_axis_parameters=None,
                      pose_types=None, pose_cylinder_radius=None, pose_cylinder_axis_direction=None,
                      pose_cylinder_axis_origin=None, pose_cylinder_group=None):
@@ -28,6 +29,7 @@ class PoseEliminator(PoseFinder):
         self.pose_cylinder_axis_origin = pose_cylinder_axis_origin
         self.pose_cylinder_group = pose_cylinder_group
         self.stability_tolerance = stability_tolerance
+        self.likelihood_threshold = liklelihood_threshold
 
     def _is_stable_by_center_mass_old(self, rotation_vector: np.ndarray, index: int) -> bool:
         """
@@ -82,7 +84,7 @@ class PoseEliminator(PoseFinder):
         path = Path(hull_points)
 
         if self.pose_types[index] == 3:
-            is_inside = path.contains_point(center_mass, radius=0)  # looser tolerance for those pesky rolling cylinder poses
+            is_inside = path.contains_point(center_mass, radius=2)  # looser tolerance for those pesky rolling cylinder poses
         else:
             is_inside = path.contains_point(center_mass, radius=self.stability_tolerance) # small negative radius to be stricter on stability and make sure the center of mass is well within the support polygon (fixes Rl4i behaviour)
         #print(f"radius: {self.stability_tolerance}")
@@ -128,6 +130,9 @@ class PoseEliminator(PoseFinder):
         min_z = np.min(verts[:, 2])  # base plane
         min_x = np.min(verts[:, 0])  # back plane
 
+        edge_origin = np.array([min_x, 0.0, min_z])
+        edge_direction = np.array([0.0, 1.0, 0.0])  # intersection of x=min_x and z=min_z
+
         # Step 3: Tilt the system so that the center of mass becomes offset by the tilt angle
         alpha = np.radians(alpha_tilt)
         beta = np.radians(beta_tilt)
@@ -136,6 +141,7 @@ class PoseEliminator(PoseFinder):
             R_tilt = R.from_euler('xy', [alpha, 0]).as_matrix()  # inverse tilt
         else:
             R_tilt = R.from_euler('xy', [alpha, -beta]).as_matrix()  # inverse tilt
+        
 
         verts_tilted = verts @ R_tilt.T
         com_tilted   = rotated_mesh.center_mass @ R_tilt.T
@@ -144,11 +150,35 @@ class PoseEliminator(PoseFinder):
         base_idx = np.where(np.abs(verts[:, 2] - min_z) < self.tolerance)[0]
         back_idx = np.where(np.abs(verts[:, 0] - min_x) < self.tolerance)[0]
 
+        base_contact = verts[base_idx]
+        back_contact = verts[back_idx]
+
+        base_contact_corrected = self.fix_contact_edge_alignment_axis(
+                contact_polygon=base_contact,
+                edge_origin=edge_origin,
+                edge_direction=edge_direction,
+                direction='x',
+                target_val=min_x,
+                tolerance=self.tolerance,
+            )
+
+        back_contact_corrected = self.fix_contact_edge_alignment_axis(
+            contact_polygon=back_contact,
+            edge_origin=edge_origin,
+            edge_direction=edge_direction,
+            direction='z',
+            target_val=min_z,
+            tolerance=self.tolerance,
+        )
+        
         # use the location of these verticies to extract the tilted polygons
-        base_contact_tilt = verts_tilted[base_idx]
-        back_contact_tilt = verts_tilted[back_idx]
+        #base_contact_tilt = verts_tilted[base_idx]
+        #back_contact_tilt = verts_tilted[back_idx]
+        base_contact_tilt = base_contact @ R_tilt.T
+        back_contact_tilt = back_contact @ R_tilt.T
 
         #Step 5: Do inside 2D convex hull projection check for both the back and base planes
+        '''
         if len(np.unique(base_contact_tilt[:, :2],axis= 0)) >= 3:
             hull_base = self.find_contact_polygon(base_contact_tilt[:, :2], min_z)
             path_base = Path(hull_base[:, :2])
@@ -156,12 +186,27 @@ class PoseEliminator(PoseFinder):
         else:
             inside_base_polygon = False
 
-        if (beta_tilt > 0.0) and (len(np.unique(back_contact_tilt[:, :2],axis=0)) >= 3):
+        # Combine base and back contact points for a single 2D convex hull
+        if (len(np.unique(back_contact_tilt[:, :2],axis=0)) >= 3):
             hull_back = self.find_contact_polygon(back_contact_tilt[:, :2], min_z)
             path_back = Path(hull_back[:, :2])
             inside_back_polygon = path_back.contains_point(com_tilted, radius=self.stability_tolerance)
         else:
             inside_back_polygon = False
+        '''
+        
+        if (len(np.unique(back_contact_tilt[:, :2],axis=0)) >= 3):         
+            combined_points = np.unique(np.vstack([base_contact_tilt[:, :2], back_contact_tilt[:, :2]]), axis=0)
+        else:
+            combined_points = np.unique(base_contact_tilt[:, :2], axis=0)
+
+        hull_combined = self.find_contact_polygon(combined_points, min_z)
+        
+        if len(combined_points) >= 3:
+            path_combined = Path(hull_combined[:, :2])
+            inside_combined_polygon = path_combined.contains_point(com_tilted, radius=self.stability_tolerance)
+        else:
+            inside_combined_polygon = False
         
         # Step 6: Y-span check at the back (min-X) face
         x_coords = verts[:, 0]
@@ -198,7 +243,7 @@ class PoseEliminator(PoseFinder):
             plt.close()
         '''
 
-        return (inside_back_polygon or inside_base_polygon) and inside_y_span
+        return (inside_combined_polygon) and inside_y_span
 
     # use a tolerance-aware modulo check
     def _is_aligned(self, value: float, step: float, tol: float) -> bool:
@@ -228,30 +273,80 @@ class PoseEliminator(PoseFinder):
         hull_3d = np.vstack([hull_3d, hull_3d[0]])  # (N+1,3)
 
         return hull_3d
-    
-    def get_stable_rotations(self):
-        return self.stable_rotations
 
-    def get_stable_shadows(self):
-        return self.stable_shadows
-    
-    def get_stable_axis_parameters(self):
-        return self.stable_axis_parameters
-    
-    def get_pose_types(self):
-        return self.pose_types
-    
-    def get_pose_cylinder_radius(self):
-        return self.pose_cylinder_radius
-    
-    def get_pose_cylinder_axis_direction(self):
-        return self.pose_cylinder_axis_direction
-    
-    def get_pose_cylinder_axis_origin(self):
-        return self.pose_cylinder_axis_origin
-    
-    def get_pose_cylinder_group(self):
-        return self.pose_cylinder_group
+    def fix_contact_edge_alignment_axis(
+            self,
+            contact_polygon,
+            edge_origin,
+            edge_direction,
+            direction='z',
+            target_val=0.0,
+            tolerance=1e-6,
+        ):
+            """
+            Snaps vertex coordinates of a contact polygon to a plane if the edge they're on
+            is facing toward the intersecting direction (e.g. -x or -z), and is near the
+            infinite edge line defined by (edge_origin, edge_direction).
+
+            Parameters
+            ----------
+            contact_polygon : (N, 3) np.ndarray
+                The polygon vertices in 3D (should be ordered/cyclic).
+            edge_origin : (3,) np.ndarray
+                A point on the shared edge line (e.g., [min_x, 0, min_z]).
+            edge_direction : (3,) np.ndarray
+                Unit direction vector of the edge (e.g., [0, 1, 0]).
+            direction : str
+                Which axis to check normal against: 'x' or 'z'.
+            target_val : float
+                Value to assign to the target axis (typically min_x or min_z).
+            tolerance : float
+                Max distance from the edge axis to snap a point.
+
+            Returns
+            -------
+            corrected : (N, 3) np.ndarray
+                Adjusted polygon vertices.
+            """
+            corrected = contact_polygon.copy()
+            N = len(corrected)
+
+            axis_map = {'z': (1, 2), 'x': (0, 1)}  # 2D projection indices
+            target_idx = {'z': 2, 'x': 0}          # axis to overwrite
+
+            if direction not in axis_map:
+                raise ValueError("direction must be 'x' or 'z'")
+
+            i1, i2 = axis_map[direction]
+            t_idx = target_idx[direction]
+
+            for i in range(N):
+                v0 = corrected[i]
+                v1 = corrected[(i + 1) % N]
+
+                # Edge vector in local 2D projection
+                edge_vec = v1[[i1, i2]] - v0[[i1, i2]]
+                norm = np.linalg.norm(edge_vec)
+                if norm < 1e-9:
+                    continue
+                edge_unit = edge_vec / norm
+
+                # 2D normal (CCW rotation)
+                normal = np.array([-edge_unit[1], edge_unit[0]])
+
+                # Check if normal points in negative direction (e.g. -z or -x)
+                if normal[1] < -0.5:
+                    for vi in [i, (i + 1) % N]:
+                        p = corrected[vi]
+
+                        # Distance from point to axis (in 3D)
+                        v = p - edge_origin
+                        proj = np.dot(v, edge_direction) * edge_direction
+                        dist = np.linalg.norm(v - proj)
+
+                        if dist < tolerance:
+                            corrected[vi, t_idx] = target_val
+            return corrected
 
     def remove_duplicates(self):
         """
@@ -343,6 +438,14 @@ class PoseEliminator(PoseFinder):
         self.pose_cylinder_axis_direction = filtered_cylinder_axis_direction
         self.pose_cylinder_axis_origin = filtered_cylinder_axis_origin
         self.pose_cylinder_group = filtered_cylinder_group
+
+    def remove_unstable_poses_below_threshold(self, centroid_solid_angle_scores, critical_solid_angle_scores, stability_scores, likelihood_threshold):
+        '''
+        Removes unstable poses based on the lowest value of either the critical solid angle score or the centroid solid angle score below the likelihood threshold.
+        :param rotations: List of tuples (pose, face_id, shadow_id, valid rotation vector).
+        :param likelihood_threshold: The threshold for likelihood to be considered stable.
+        '''
+        
     
     def remove_cylinder_poses(self):
         """
