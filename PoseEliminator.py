@@ -30,6 +30,9 @@ class PoseEliminator(PoseFinder):
         self.pose_cylinder_group = pose_cylinder_group
         self.stability_tolerance = stability_tolerance
         self.likelihood_threshold = liklelihood_threshold
+        self.csa_scores = []
+        self.stability_scores = []
+        self.crsa_scores = []
 
     def _is_stable_by_center_mass_old(self, rotation_vector: np.ndarray, index: int) -> bool:
         """
@@ -195,10 +198,7 @@ class PoseEliminator(PoseFinder):
             inside_back_polygon = False
         '''
         
-        if (len(np.unique(back_contact_tilt[:, :2],axis=0)) >= 3):         
-            combined_points = np.unique(np.vstack([base_contact_tilt[:, :2], back_contact_tilt[:, :2]]), axis=0)
-        else:
-            combined_points = np.unique(base_contact_tilt[:, :2], axis=0)
+        combined_points = np.unique(np.vstack([base_contact_tilt[:, :2], back_contact_tilt[:, :2]]), axis=0)
 
         hull_combined = self.find_contact_polygon(combined_points, min_z)
         
@@ -347,142 +347,154 @@ class PoseEliminator(PoseFinder):
                         if dist < tolerance:
                             corrected[vi, t_idx] = target_val
             return corrected
+    
+    def _pose_items(self):
+        for list_idx, (old_pose_id, face_id, edge_id, quat) in enumerate(self.stable_rotations):
+            yield list_idx, old_pose_id, face_id, edge_id, quat
 
+
+    def _apply_pose_filter(self, keep_indices, keep_scores=False):
+        """
+        Keep only poses at keep_indices and reassign compact pose ids.
+        """
+        def _safe_get(values, list_idx, default=None):
+            if values is not None and list_idx < len(values):
+                return values[list_idx]
+            return default
+
+        new_rotations = []
+        new_shadows = []
+        new_axis_parameters = []
+        new_pose_types = []
+        new_cylinder_radius = []
+        new_cylinder_axis_direction = []
+        new_cylinder_axis_origin = []
+        new_cylinder_group = []
+
+        new_csa_scores = []
+        new_crsa_scores = []
+        new_stability_scores = []
+
+        for new_pose_id, list_idx in enumerate(keep_indices):
+            _, face_id, edge_id, quat = self.stable_rotations[list_idx]
+
+            new_rotations.append((new_pose_id, face_id, edge_id, quat))
+
+            new_shadows.append(_safe_get(self.stable_shadows, list_idx))
+            new_axis_parameters.append(_safe_get(self.stable_axis_parameters, list_idx))
+            new_pose_types.append(_safe_get(self.pose_types, list_idx, 0))
+            new_cylinder_radius.append(_safe_get(self.pose_cylinder_radius, list_idx, 0))
+            new_cylinder_axis_direction.append(
+                _safe_get(self.pose_cylinder_axis_direction, list_idx, [0, 0, 1])
+            )
+            new_cylinder_axis_origin.append(
+                _safe_get(self.pose_cylinder_axis_origin, list_idx, [0, 0, 0])
+            )
+            new_cylinder_group.append(_safe_get(self.pose_cylinder_group, list_idx, 0))
+
+            if keep_scores:
+                new_csa_scores.append(_safe_get(self.csa_scores, list_idx, 0))
+                new_crsa_scores.append(_safe_get(self.crsa_scores, list_idx, 0))
+                new_stability_scores.append(_safe_get(self.stability_scores, list_idx, 0))
+
+        self.stable_rotations = new_rotations
+        self.stable_shadows = new_shadows
+        self.stable_axis_parameters = new_axis_parameters
+        self.pose_types = new_pose_types
+        self.pose_cylinder_radius = new_cylinder_radius
+        self.pose_cylinder_axis_direction = new_cylinder_axis_direction
+        self.pose_cylinder_axis_origin = new_cylinder_axis_origin
+        self.pose_cylinder_group = new_cylinder_group
+
+        if keep_scores:
+            self.csa_scores = new_csa_scores
+            self.crsa_scores = new_crsa_scores
+            self.stability_scores = new_stability_scores
+    
     def remove_duplicates(self):
         """
         Handles duplicate rotations by removing rotations that are too close to each other.
-        :param rotations: List of tuples (pose, face_id, shadow_id, valid rotation vector).
-        :return: List of tuples (assigned pose, face_id, shadow_id, valid rotation vector).
         """
-        unique_rotations = {}
-        assigned_rotations = []
-        assigned_shadows = []
-        assigned_cylinder_axis_parameters = []
-        filtered_pose_types = []
-        filtered_cylinder_radius = []
-        filtered_cylinder_axis_direction = []
-        filtered_cylinder_axis_origin = []
-        filtered_cylinder_group = []
-        pose_count = 0
+        seen_quats = set()
+        keep_indices = []
 
-        for index, face_id, edge_id, quat in self.stable_rotations:
-            if quat not in unique_rotations:
-                unique_rotations[quat] = index
-                assigned_rotations.append((pose_count, face_id, edge_id, quat))
-                assigned_shadows.append(self.stable_shadows[index])
-                if self.stable_axis_parameters:
-                    assigned_cylinder_axis_parameters.append(self.stable_axis_parameters[index])
-                else:
-                    assigned_cylinder_axis_parameters.append(None)
-                filtered_pose_types.append(self.pose_types[index])
-                filtered_cylinder_radius.append(self.pose_cylinder_radius[index])
-                filtered_cylinder_axis_direction.append(self.pose_cylinder_axis_direction[index])
-                filtered_cylinder_axis_origin.append(self.pose_cylinder_axis_origin[index])
-                filtered_cylinder_group.append(self.pose_cylinder_group[index])
+        for list_idx, old_pose_id, face_id, edge_id, quat in self._pose_items():
+            quat_key = tuple(np.round(quat, decimals=12))
 
-                pose_count += 1
-        
-        self.stable_rotations = assigned_rotations
-        self.stable_shadows = assigned_shadows
-        self.stable_axis_parameters = assigned_cylinder_axis_parameters
-        self.pose_types = filtered_pose_types
-        self.pose_cylinder_radius = filtered_cylinder_radius
-        self.pose_cylinder_axis_direction = filtered_cylinder_axis_direction
-        self.pose_cylinder_axis_origin = filtered_cylinder_axis_origin
-        self.pose_cylinder_group = filtered_cylinder_group
-    
+            if quat_key not in seen_quats:
+                seen_quats.add(quat_key)
+                keep_indices.append(old_pose_id)
+
+        self._apply_pose_filter(keep_indices)
     
     def remove_unstable_poses(self, alpha_tilt: float, beta_tilt: float):
         """
         Removes unstable poses based on the convex hull.
-        :param rotations: List of tuples (pose, face_id, shadow_id, valid rotation vector).
-        :return: List of tuples (assigned pose, face_id, shadow_id, valid rotation vector).
         """
-        stable_rotations = []
-        stable_shadows = []
-        stable_cylinder_axis_parameters = []
-        filtered_pose_types = []
-        filtered_cylinder_radius = []
-        filtered_cylinder_axis_direction = []
-        filtered_cylinder_axis_origin = []
-        filtered_cylinder_group = []
-        pose_count = 0
+        keep_indices = []
 
-        for index, face_id, edge_id, quat in self.stable_rotations:
-            #print(f"Checking pose {index} for stability...")
-            is_stable_flat = self._is_stable_by_center_mass(quat, index, 0, 0)
+        for list_idx, old_pose_id, face_id, edge_id, quat in self._pose_items():
+            is_stable_flat = self._is_stable_by_center_mass(
+                quat,
+                list_idx,
+                0,
+                0,
+            )
 
-            if self.pose_types[index] == 3:
-                is_stable_tilted = self._is_stable_by_center_mass(quat, index, alpha_tilt, 0) # ignore beta tilt as it was applied during cylinder pose assignment
+            if self.pose_types[list_idx] == 3:
+                is_stable_tilted = self._is_stable_by_center_mass(
+                    quat,
+                    list_idx,
+                    alpha_tilt,
+                    0,
+                )
             else:
-                is_stable_tilted = self._is_stable_by_center_mass(quat, index, alpha_tilt, beta_tilt)
+                is_stable_tilted = self._is_stable_by_center_mass(
+                    quat,
+                    list_idx,
+                    alpha_tilt,
+                    beta_tilt,
+                )
 
-            #print(f"Pose {index} stability: {is_stable_flat} and {is_stable_tilted}")
             if is_stable_flat and is_stable_tilted:
-                #print(f"Pose {index} is stable.")
-                stable_rotations.append((pose_count, face_id, edge_id, quat))
-                stable_shadows.append(self.stable_shadows[index])
-                stable_cylinder_axis_parameters.append(self.stable_axis_parameters[index])
-                filtered_pose_types.append(self.pose_types[index])
-                filtered_cylinder_radius.append(self.pose_cylinder_radius[index])
-                filtered_cylinder_axis_direction.append(self.pose_cylinder_axis_direction[index])
-                filtered_cylinder_axis_origin.append(self.pose_cylinder_axis_origin[index])
-                filtered_cylinder_group.append(self.pose_cylinder_group[index])
-            pose_count += 1
-        
-        self.stable_rotations = stable_rotations
-        self.stable_shadows = stable_shadows
-        self.stable_axis_parameters = stable_cylinder_axis_parameters
-        self.pose_types = filtered_pose_types
-        self.pose_cylinder_radius = filtered_cylinder_radius
-        self.pose_cylinder_axis_direction = filtered_cylinder_axis_direction
-        self.pose_cylinder_axis_origin = filtered_cylinder_axis_origin
-        self.pose_cylinder_group = filtered_cylinder_group
+                keep_indices.append(list_idx)
 
-    def remove_unstable_poses_below_threshold(self, centroid_solid_angle_scores, critical_solid_angle_scores, stability_scores, likelihood_threshold):
-        '''
-        Removes unstable poses based on the lowest value of either the critical solid angle score or the centroid solid angle score below the likelihood threshold.
-        :param rotations: List of tuples (pose, face_id, shadow_id, valid rotation vector).
-        :param likelihood_threshold: The threshold for likelihood to be considered stable.
-        '''
-        
+        self._apply_pose_filter(keep_indices)
+    
+    def remove_unstable_poses_below_threshold(self):
+        """
+        Removes poses whose CSA, CRSA, or stability score is below the likelihood threshold.
+        """
+        keep_indices = []
+
+        for list_idx, old_pose_id, face_id, edge_id, quat in self._pose_items():
+            keep_pose = (
+                self.csa_scores[list_idx] >= self.likelihood_threshold and
+                self.crsa_scores[list_idx] >= self.likelihood_threshold and
+                self.stability_scores[list_idx] >= self.likelihood_threshold
+            )
+
+            if keep_pose:
+                print(
+                    list_idx,
+                    self.csa_scores[list_idx],
+                    self.crsa_scores[list_idx],
+                    self.stability_scores[list_idx],
+                )
+                keep_indices.append(list_idx)
+
+        self._apply_pose_filter(keep_indices, keep_scores=True)
     
     def remove_cylinder_poses(self):
         """
         Removes cylinder poses based on alignment criteria.
-        :param rotations: List of tuples (pose, face_id, shadow_id, valid rotation vector).
-        :return: List of tuples (assigned pose, face_id, shadow_id, valid rotation vector).
         """
-        filtered_rotations = []
-        filtered_shadows = []
-        filtered_cylinder_axis_parameters = []
-        filtered_pose_types = []
-        filtered_cylinder_radius = []
-        filtered_cylinder_axis_direction = []
-        filtered_cylinder_axis_origin = []
-        filtered_cylinder_group = []
-        filtered_critical_solid_angle_scores = []
-        filtered_centroid_solid_angle_scores = []
-        filtered_stability_scores = []
-        pose_count = 0
+        allowed_pose_types = {0, 2, 3}
 
-        for index, face_id, edge_id, quat in self.stable_rotations:
-            if ((self.pose_types[index] == 0) or (self.pose_types[index] == 2) or (self.pose_types[index] == 3)): # detect only acceptable cylinder poses and remaining non cylinder poses
-                filtered_rotations.append((pose_count, face_id, edge_id, quat))
-                filtered_shadows.append(self.stable_shadows[index])
-                filtered_cylinder_axis_parameters.append(self.stable_axis_parameters[index])
-                filtered_pose_types.append(self.pose_types[index])
-                filtered_cylinder_radius.append(self.pose_cylinder_radius[index])
-                filtered_cylinder_axis_direction.append(self.pose_cylinder_axis_direction[index])
-                filtered_cylinder_axis_origin.append(self.pose_cylinder_axis_origin[index])
-                filtered_cylinder_group.append(self.pose_cylinder_group[index])
-                pose_count += 1
-        
-        self.stable_rotations = filtered_rotations
-        self.stable_shadows = filtered_shadows
-        self.stable_axis_parameters = filtered_cylinder_axis_parameters
-        self.pose_types = filtered_pose_types
-        self.pose_cylinder_radius = filtered_cylinder_radius
-        self.pose_cylinder_axis_direction = filtered_cylinder_axis_direction
-        self.pose_cylinder_axis_origin = filtered_cylinder_axis_origin
-        self.pose_cylinder_group = filtered_cylinder_group
+        keep_indices = [
+            list_idx
+            for list_idx, old_pose_id, face_id, edge_id, quat in self._pose_items()
+            if self.pose_types[list_idx] in allowed_pose_types
+        ]
+
+        self._apply_pose_filter(keep_indices)  

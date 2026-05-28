@@ -9,14 +9,40 @@ from matplotlib.path import Path
 import matplotlib.pyplot as plt
 
 class CentroidSolidAngleAnalyser(PoseEliminator):
-    def __init__(self, poses = None, convex_hull_obj_file=None, obj_file=None, pose_types=None, pose_cylinder_radius=None, pose_cylinder_axis_origin=None, pose_cylinder_axis_direction=None,is_symmetry_pose_reducing = False,tolerance=1e-5):
-        super().__init__(convex_hull_obj_file, obj_file, tolerance)
+    def __init__(self, poses=None, convex_hull_obj_file=None, obj_file=None,
+                 pose_types=None, pose_cylinder_radius=None,
+                 pose_cylinder_axis_origin=None,
+                 pose_cylinder_axis_direction=None,
+                 pose_cylinder_group=None,
+                 stable_shadows=None,
+                 stable_axis_parameters=None,
+                 is_symmetry_pose_reducing=False,
+                 tolerance=1e-5,
+                 stability_tolerance=1e-3):
+
+        super().__init__(
+            convex_hull_obj_file=convex_hull_obj_file,
+            self_obj_file=obj_file,
+            tolerance=tolerance,
+            stability_tolerance=stability_tolerance,
+            stable_rotations=poses,
+            stable_shadows=stable_shadows,
+            stable_axis_parameters=stable_axis_parameters,
+            pose_types=pose_types,
+            pose_cylinder_radius=pose_cylinder_radius,
+            pose_cylinder_axis_direction=pose_cylinder_axis_direction,
+            pose_cylinder_axis_origin=pose_cylinder_axis_origin,
+            pose_cylinder_group=pose_cylinder_group,
+        )
+
         self.poses = poses
         self.pose_types = pose_types
         self.pose_cylinder_radius = pose_cylinder_radius
         self.pose_cylinder_axis_origin = pose_cylinder_axis_origin
         self.pose_cylinder_axis_direction = pose_cylinder_axis_direction
+        self.pose_cylinder_group = pose_cylinder_group
         self.is_symmetry_pose_reducing = is_symmetry_pose_reducing
+
         self.csa_values = []
         self.stability_values = []
         self.crsa_values = []
