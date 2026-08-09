@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 from pathlib import Path
 from typing import Sequence
@@ -173,9 +174,36 @@ def _stability(args: argparse.Namespace) -> int:
         mu_samples=args.mu_samples,
         catalog=catalog,
     )
-    symmetry = detect_rotational_symmetry(
+    detected_symmetry = detect_rotational_symmetry(
         args.mesh, tolerance_mm=args.symmetry_tolerance_mm
     )
+    verification = None
+    if args.symmetry_tolerance_mm is not None:
+        symmetry = detected_symmetry
+        symmetry_policy = "explicit_practical_tolerance"
+    elif detected_symmetry.order == 1:
+        symmetry = detected_symmetry
+        symmetry_policy = "no_nontrivial_symmetry"
+    else:
+        step_path = _matching_step_path(args.mesh)
+        try:
+            verification = (
+                verify_step_symmetry(step_path, detected_symmetry)
+                if step_path is not None
+                else None
+            )
+        except StepSupportUnavailable:
+            verification = None
+        if verification is not None and verification.exact_confirmed:
+            symmetry = detected_symmetry
+            symmetry_policy = "exact_step_confirmation"
+        else:
+            symmetry = replace(
+                detected_symmetry,
+                symbol="C1",
+                elements=(detected_symmetry.elements[0],),
+            )
+            symmetry_policy = "not_merged_without_exact_step_confirmation"
     reduced = reduce_catalog_by_symmetry(catalog, symmetry)
     stable_ids = set(analysis.stable_pose_ids)
     stable_class_representatives = tuple(
@@ -191,15 +219,17 @@ def _stability(args: argparse.Namespace) -> int:
         if stable_ids.intersection(value.pose_ids)
     }
     if args.render_output_dir is not None:
+        part_name = args.mesh.stem
         render_pose_sheets(
             args.mesh,
             args.render_output_dir,
             pose_ids=stable_class_representatives,
             sheet_title=(
-                f"Df1a: quasistatisch zulaessige Gleitlagen bei alpha={args.alpha:g} deg, "
+                f"{part_name}: quasistatisch zulaessige Gleitlagen "
+                f"bei alpha={args.alpha:g} deg, "
                 f"beta={args.beta:g} deg"
             ),
-            filename_prefix="Df1a_stable",
+            filename_prefix=f"{part_name}_quasistatic",
             pose_labels=stable_pose_labels,
         )
 
@@ -246,9 +276,15 @@ def _stability(args: argparse.Namespace) -> int:
         f"rejected at every sample: {len(analysis.rejected_pose_ids)}"
     )
     print(
-        f"Practical rotation symmetry: {symmetry.symbol} "
+        f"Applied rotation symmetry: {symmetry.symbol} "
         f"(order {symmetry.order}, tolerance {symmetry.tolerance_mm:.6g} mm)"
     )
+    print(f"Symmetry merge policy: {symmetry_policy}")
+    if detected_symmetry.order > symmetry.order:
+        print(
+            f"Unmerged STL candidate: {detected_symmetry.symbol} "
+            "(requires exact STEP confirmation or explicit tolerance)"
+        )
     print(
         "Quasi-static pose classes after symmetry grouping: "
         f"{len(stable_class_representatives)}"

@@ -226,6 +226,20 @@ def reduce_catalog_by_symmetry(
     ]
     parents = list(range(len(catalog.poses)))
 
+    if symmetry.order == 1:
+        return SymmetryReducedCatalog(
+            symmetry=symmetry,
+            classes=tuple(
+                PoseEquivalenceClass(
+                    class_id=index,
+                    representative_pose_id=pose.pose_id,
+                    pose_ids=(pose.pose_id,),
+                )
+                for index, pose in enumerate(catalog.poses)
+            ),
+            angular_tolerance_deg=angular_tolerance_deg,
+        )
+
     def find(index: int) -> int:
         while parents[index] != index:
             parents[index] = parents[parents[index]]

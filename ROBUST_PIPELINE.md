@@ -148,18 +148,21 @@ Symmetry handling is deliberately two-stage:
    is checked using the Boolean symmetric-volume difference of the exact B-Rep.
 
 The STEP check distinguishes exact CAD symmetry from a process-level practical
-symmetry. It is optional so the normal STL pipeline does not require the large
-OpenCascade dependency:
+symmetry. Exact STEP-confirmed symmetries are merged automatically. A merely
+practical symmetry is only merged when an explicit, part-specific tolerance is
+provided; otherwise the STL candidate is reported but left unmerged. The STEP
+support is optional so the normal STL pipeline does not require OpenCascade:
 
 ```powershell
 uv run --extra step chute-pose symmetry "Werkstücke_STL_grob/Df1a.STL" `
   --tolerance-mm 0.5
 ```
 
-For Df1a this finds practical `C3` symmetry. STEP does not confirm it as exact:
-the two rotated sectors have about `0.4038%` symmetric-volume difference and
-roughly `0.32 mm` vertex deviation. Nevertheless, the experimentally
-indistinguishable face-face representations are correctly grouped:
+For Df1a this finds a `C3` candidate. STEP does not confirm it as exact because
+the CAD model itself is incorrect: the two rotated sectors have about `0.4038%`
+symmetric-volume difference and roughly `0.32 mm` vertex deviation. It is not
+merged by default. With the explicitly approved `0.5 mm` tolerance, the
+experimentally indistinguishable face-face representations are grouped:
 
 ```text
 (9, 12, 32)   (24, 26, 28)   (60, 61, 86)   (35, 105, 106)
@@ -168,6 +171,21 @@ indistinguishable face-face representations are correctly grouped:
 For Ql1i the same automatic procedure finds `C4`; STEP confirms the fourfold
 symmetry exactly, and its 24 theoretical rotations reduce to 6 physical pose
 classes of four representations each.
+
+## Additional validation parts
+
+At `alpha = 45 deg`, `beta = 20 deg` and the Df1a-derived sampled friction
+range, Dl1a has exact STEP-confirmed `C3` symmetry. Its 198 theoretical
+representations contain 42 quasi-statically admissible results, which reduce to
+14 physical classes: 6 face-face, 4 floor-edge/wall-face and 4
+floor-face/wall-edge classes.
+
+Qk1a has no non-trivial full-part rotation symmetry (`C1`). Its faceted convex
+hull currently produces 86 support planes and 2232 theoretical orientations.
+The quasi-static filter retains 48: 32 face-face and 8 of each face-edge
+direction. The large unfiltered count and several visually near-identical
+results show that curved/faceted support regions need a separate consolidation
+step before Qk1a should be treated as a final pose prediction.
 
 Edge/face configurations that rapidly switch between nearby orientations are
 kept separate from symmetry equivalence. They are transition or metastability

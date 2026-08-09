@@ -175,7 +175,9 @@ def verify_step_symmetry(
             )
         )
 
-    if all(check.exact for check in checks):
+    if not checks:
+        result_status = "no_nontrivial_candidate"
+    elif all(check.exact for check in checks):
         result_status = "exact_confirmed"
     elif checks and all(
         check.topology_vertex_error_mm <= candidate.tolerance_mm for check in checks
