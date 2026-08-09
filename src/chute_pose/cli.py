@@ -8,10 +8,21 @@ import json
 from pathlib import Path
 from typing import Sequence
 
+import numpy as np
+
 from .frame import ChuteFrame
-from .geometry import GeometryValidationError, inspect_mesh
+from .geometry import GeometryValidationError, inspect_mesh, load_solid_mesh
 from .contacts import build_pose_catalog
 from .stability import analyze_pose_stability
+from .disturbance import (
+    analyze_disturbance_robustness,
+    filter_disturbance_robustness,
+)
+from .equivalence import cluster_practical_contact_poses
+from .rocking import (
+    analyze_rocking_barriers,
+    filter_finite_disturbance_robustness,
+)
 from .symmetry import detect_rotational_symmetry, reduce_catalog_by_symmetry
 from .step_verification import StepSupportUnavailable, verify_step_symmetry
 from .visualization import render_pose_sheets
@@ -69,6 +80,44 @@ def _build_parser() -> argparse.ArgumentParser:
     symmetry_parser.add_argument("--tolerance-mm", type=float)
     symmetry_parser.add_argument("--angular-tolerance-deg", type=float, default=0.25)
     symmetry_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    disturbance_parser = subparsers.add_parser(
+        "disturbance",
+        help="Filter nominal poses by critical braking-force and upset-torque reserve.",
+    )
+    disturbance_parser.add_argument("mesh", type=Path)
+    disturbance_parser.add_argument(
+        "--pose-ids", help="Comma-separated pose ids; default is the nominal stable set."
+    )
+    disturbance_parser.add_argument("--alpha", type=float, default=45.0)
+    disturbance_parser.add_argument("--beta", type=float, default=20.0)
+    disturbance_parser.add_argument("--onset-alpha", type=float, default=45.0)
+    disturbance_parser.add_argument("--onset-beta", type=float, default=15.0)
+    disturbance_parser.add_argument("--mu-samples", type=int, default=11)
+    disturbance_parser.add_argument("--minimum-braking-g", type=float, default=0.10)
+    disturbance_parser.add_argument(
+        "--minimum-torque-normalized", type=float, default=0.02
+    )
+    disturbance_parser.add_argument(
+        "--rocking-excursion-deg", type=float, default=5.0
+    )
+    disturbance_parser.add_argument("--rocking-angle-steps", type=int, default=20)
+    disturbance_parser.add_argument("--rocking-axis-samples", type=int, default=2048)
+    disturbance_parser.add_argument(
+        "--minimum-rocking-barrier-mm", type=float, default=0.20
+    )
+    disturbance_parser.add_argument(
+        "--minimum-face-face-braking-g", type=float, default=0.10
+    )
+    disturbance_parser.add_argument("--symmetry-tolerance-mm", type=float)
+    disturbance_parser.add_argument(
+        "--contact-angle-tolerance-deg", type=float, default=1.0
+    )
+    disturbance_parser.add_argument(
+        "--contact-displacement-tolerance-mm", type=float, default=0.5
+    )
+    disturbance_parser.add_argument("--render-output-dir", type=Path)
+    disturbance_parser.add_argument("--json", action="store_true", dest="as_json")
     return parser
 
 
@@ -353,6 +402,158 @@ def _symmetry(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_pose_ids(value: str | None) -> tuple[int, ...] | None:
+    if value is None:
+        return None
+    try:
+        pose_ids = tuple(int(item.strip()) for item in value.split(",") if item.strip())
+    except ValueError as exc:
+        raise ValueError("--pose-ids must be a comma-separated list of integers.") from exc
+    if not pose_ids:
+        raise ValueError("--pose-ids must contain at least one integer.")
+    return pose_ids
+
+
+def _disturbance(args: argparse.Namespace) -> int:
+    catalog = build_pose_catalog(args.mesh)
+    requested_pose_ids = _parse_pose_ids(args.pose_ids)
+    if requested_pose_ids is None:
+        nominal = analyze_pose_stability(
+            args.mesh,
+            alpha_deg=args.alpha,
+            beta_deg=args.beta,
+            onset_alpha_deg=args.onset_alpha,
+            onset_beta_deg=args.onset_beta,
+            mu_samples=args.mu_samples,
+            catalog=catalog,
+        )
+        requested_pose_ids = nominal.stable_pose_ids
+    analysis = analyze_disturbance_robustness(
+        args.mesh,
+        pose_ids=requested_pose_ids,
+        alpha_deg=args.alpha,
+        beta_deg=args.beta,
+        onset_alpha_deg=args.onset_alpha,
+        onset_beta_deg=args.onset_beta,
+        mu_samples=args.mu_samples,
+        catalog=catalog,
+    )
+    filtered = filter_disturbance_robustness(
+        analysis,
+        minimum_braking_g=args.minimum_braking_g,
+        minimum_torque_normalized=args.minimum_torque_normalized,
+    )
+    rocking = analyze_rocking_barriers(
+        args.mesh,
+        pose_ids=requested_pose_ids,
+        alpha_deg=args.alpha,
+        beta_deg=args.beta,
+        excursion_deg=args.rocking_excursion_deg,
+        angle_steps=args.rocking_angle_steps,
+        axis_samples=args.rocking_axis_samples,
+        catalog=catalog,
+    )
+    finite_filtered = filter_finite_disturbance_robustness(
+        rocking,
+        analysis,
+        catalog,
+        minimum_barrier_height_mm=args.minimum_rocking_barrier_mm,
+        minimum_face_face_braking_g=args.minimum_face_face_braking_g,
+    )
+    mesh = load_solid_mesh(args.mesh)
+    vertices_centered = np.asarray(mesh.vertices, dtype=float) - np.asarray(
+        mesh.center_mass, dtype=float
+    )
+    symmetry = (
+        detect_rotational_symmetry(
+            args.mesh, tolerance_mm=args.symmetry_tolerance_mm
+        )
+        if args.symmetry_tolerance_mm is not None
+        else None
+    )
+    clustering = cluster_practical_contact_poses(
+        catalog,
+        vertices_centered,
+        requested_pose_ids,
+        symmetry=symmetry,
+        angular_tolerance_deg=args.contact_angle_tolerance_deg,
+        surface_displacement_tolerance_mm=max(
+            args.contact_displacement_tolerance_mm,
+            symmetry.tolerance_mm if symmetry is not None else 0.0,
+        ),
+    )
+    capacities = {value.pose_id: value for value in analysis.capacities}
+    barriers = {value.pose_id: value for value in rocking.barriers}
+    accepted_ids = set(finite_filtered.accepted_pose_ids)
+    robust_classes = tuple(
+        pose_class
+        for pose_class in clustering.classes
+        if all(pose_id in accepted_ids for pose_id in pose_class.pose_ids)
+    )
+    robust_representation_count = sum(
+        len(pose_class.pose_ids) for pose_class in robust_classes
+    )
+
+    if args.render_output_dir is not None:
+        labels = {
+            pose_class.representative_pose_id: (
+                "Klasse " + "/".join(str(value) for value in pose_class.pose_ids)
+            )
+            for pose_class in robust_classes
+        }
+        render_pose_sheets(
+            args.mesh,
+            args.render_output_dir,
+            pose_ids=labels,
+            sheet_title=(
+                f"{args.mesh.stem}: stoerfeste Gleitposen "
+                f"bei alpha={args.alpha:g} deg, beta={args.beta:g} deg"
+            ),
+            filename_prefix=f"{args.mesh.stem}_disturbance_robust",
+            pose_labels=labels,
+        )
+
+    if args.as_json:
+        result = analysis.to_dict()
+        result["filter"] = filtered.to_dict()
+        result["rocking"] = rocking.to_dict()
+        result["finite_disturbance_filter"] = finite_filtered.to_dict()
+        result["practical_clustering"] = clustering.to_dict()
+        result["robust_practical_classes"] = [
+            pose_class.to_dict() for pose_class in robust_classes
+        ]
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+
+    print(f"Mesh: {analysis.source}")
+    print(f"Nominal input poses: {len(requested_pose_ids)}")
+    print(
+        "Finite disturbance thresholds: "
+        f"rocking barrier >= {finite_filtered.minimum_barrier_height_mm:.6g} mm; "
+        "for face-face additionally braking >= "
+        f"{finite_filtered.minimum_face_face_braking_g:.6g} g"
+    )
+    print(
+        f"Disturbance-robust representations in complete classes: "
+        f"{robust_representation_count}; practical pose classes: "
+        f"{len(robust_classes)}"
+    )
+    for pose_class in robust_classes:
+        member_capacities = [capacities[value] for value in pose_class.pose_ids]
+        print(
+            "  "
+            + "/".join(str(value) for value in pose_class.pose_ids)
+            + f": braking={min(value.critical_braking_g for value in member_capacities):.6f} g"
+            + ", torque="
+            + f"{min(value.critical_torque_normalized for value in member_capacities):.6f}"
+            + ", rocking="
+            + f"{min(barriers[value].barrier_height_mm for value in pose_class.pose_ids):.6f} mm"
+        )
+    if args.render_output_dir is not None:
+        print(f"Rendered robust classes to: {args.render_output_dir.resolve()}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -367,6 +568,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _stability(args)
         if args.command == "symmetry":
             return _symmetry(args)
+        if args.command == "disturbance":
+            return _disturbance(args)
     except (GeometryValidationError, StepSupportUnavailable, ValueError) as exc:
         parser.error(str(exc))
     raise AssertionError(f"Unhandled command: {args.command}")

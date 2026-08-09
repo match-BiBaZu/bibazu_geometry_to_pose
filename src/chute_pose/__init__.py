@@ -26,6 +26,25 @@ from .step_verification import (
     StepSymmetryVerification,
     verify_step_symmetry,
 )
+from .disturbance import (
+    DisturbanceAnalysis,
+    DisturbanceCapacity,
+    DisturbanceFilterResult,
+    analyze_disturbance_robustness,
+    filter_disturbance_robustness,
+)
+from .equivalence import (
+    PracticalPoseClass,
+    PracticalPoseClustering,
+    cluster_practical_contact_poses,
+)
+from .rocking import (
+    FiniteDisturbanceFilterResult,
+    RockingAnalysis,
+    RockingBarrier,
+    analyze_rocking_barriers,
+    filter_finite_disturbance_robustness,
+)
 
 __all__ = [
     "ChuteFrame",
@@ -54,4 +73,17 @@ __all__ = [
     "StepSymmetryElementCheck",
     "StepSymmetryVerification",
     "verify_step_symmetry",
+    "DisturbanceAnalysis",
+    "DisturbanceCapacity",
+    "DisturbanceFilterResult",
+    "analyze_disturbance_robustness",
+    "filter_disturbance_robustness",
+    "PracticalPoseClass",
+    "PracticalPoseClustering",
+    "cluster_practical_contact_poses",
+    "RockingAnalysis",
+    "RockingBarrier",
+    "analyze_rocking_barriers",
+    "FiniteDisturbanceFilterResult",
+    "filter_finite_disturbance_robustness",
 ]

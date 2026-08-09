@@ -197,3 +197,76 @@ as *quasi-statically admissible*, not automatically as experimentally stable.
 For Df1a the 12 face-face representations (four physical classes) are accepted
 by observation. The remaining edge/face results stay flagged as transition or
 metastability candidates until that additional criterion is implemented.
+
+## Disturbance robustness: finite rocking barriers
+
+The nominal wrench test does not represent a part catching on dirt, an edge or
+another local irregularity. The first disturbance model therefore computes two
+diagnostic first-unloading capacities for every nominally admissible pose:
+
+- the smallest additional braking force per unit mass in `-X`, applied at the
+  worst boundary point of either the floor or wall contact;
+- the smallest positive or negative pure upset moment about any of the three
+  mass-principal part axes.
+
+For every disturbance direction, a linear program redistributes non-negative
+floor and wall pressure while preserving force and moment equilibrium. These
+capacities are useful diagnostics, but unloading a single contact point is not
+necessarily overturning. Qk1a poses 518 and 519 can unload one contact, rock
+into another contact and return to the same diagonal pose.
+
+The robust decision therefore adds a finite rocking-energy calculation. For
+each pose it samples signed spatial rocking axes and follows the orientation in
+small steps out to 5 degrees. At every step the part is translated back against
+both chute planes. The weakest peak increase in potential energy is reported
+as the equivalent vertical centre-of-mass lift in millimetres.
+
+The first explicitly calibrated decision rule is:
+
+```text
+finite rocking barrier >= 0.20 mm
+for face-face poses additionally: critical braking reserve >= 0.10 g
+```
+
+The 0.20 mm value is a provisional robustness scale for the currently observed
+irregularities, not a material constant. It must be validated on further parts.
+The conditional face-face braking check remains because a pure face-face pose
+does not have the harmless early edge-unloading mechanism of diagonal Qk1a
+poses. This rule reproduces all currently supplied labels:
+
+- Df1a: the 27 nominal representations reduce to exactly the 12 observed
+  face-face representations, or 4 practical C3 classes;
+- Dl1a: the 42 nominal representations reduce to exactly the 4 observed
+  classes `15/63/154`, `16/64/153`, `31/109/168`, `34/87/169`;
+- the mirrored Dl1a longitudinal classes have only about 0.011 mm barrier,
+  while the observed classes have about 0.248 mm;
+- Qk1a: only the 16 diagonal edge/face representations remain. Their weakest
+  barriers are about 0.339--0.365 mm; the previously predicted face-face
+  classes remain below about 0.14 mm.
+
+Run the filter and render the surviving physical classes with:
+
+```powershell
+uv run chute-pose disturbance "Werkstücke_STL_grob/Dl1a.STL" `
+  --symmetry-tolerance-mm 0.4 `
+  --render-output-dir "Poses_Found_Robust/Dl1a_disturbance_robust"
+```
+
+## Practical contact-pose equivalence
+
+This is separate from exact STEP part symmetry. Candidate orientations are
+complete-link clustered only when every pair stays inside configured angular
+and occupied-surface displacement tolerances. An explicitly approved practical
+rotation group may also be supplied.
+
+For Qk1a, poses 130, 525, 528 and 1102 differ by quarter turns about the part Z
+axis. The full STEP part is not exactly C4, but all four placements differ by at
+most about `0.523 mm`; the experimentally approved functional equivalence is
+therefore represented by an explicit `0.6 mm` practical C4 tolerance. After
+finite-disturbance filtering, Qk1a retains four practical classes (16 catalog
+representations) rather than the 48 nominal representations. Contact clustering
+uses at least the explicitly approved symmetry tolerance, so the measured
+0.523 mm C4 deviation is not accidentally compared against the smaller 0.5 mm
+default. Its practical 1 degree angular tolerance also consolidates support-
+facet variants which differ by about 0.864 degrees and only 0.304 mm occupied-
+surface displacement.
