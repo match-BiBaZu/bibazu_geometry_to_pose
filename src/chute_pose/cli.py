@@ -9,6 +9,8 @@ from typing import Sequence
 
 from .frame import ChuteFrame
 from .geometry import GeometryValidationError, inspect_mesh
+from .contacts import build_pose_catalog
+from .visualization import render_pose_sheets
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -22,6 +24,21 @@ def _build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("--alpha", type=float, default=45.0)
     inspect_parser.add_argument("--beta", type=float, default=20.0)
     inspect_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    catalog_parser = subparsers.add_parser(
+        "catalog", help="Enumerate theoretical simultaneous floor-wall poses."
+    )
+    catalog_parser.add_argument("mesh", type=Path)
+    catalog_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    render_parser = subparsers.add_parser(
+        "render", help="Render theoretical poses as grouped PNG contact sheets."
+    )
+    render_parser.add_argument("mesh", type=Path)
+    render_parser.add_argument("--output-dir", type=Path, required=True)
+    render_parser.add_argument("--poses-per-sheet", type=int, default=24)
+    render_parser.add_argument("--columns", type=int, default=6)
+    render_parser.add_argument("--dpi", type=int, default=180)
     return parser
 
 
@@ -78,12 +95,54 @@ def _inspect(args: argparse.Namespace) -> int:
     return 0
 
 
+def _catalog(args: argparse.Namespace) -> int:
+    catalog = build_pose_catalog(args.mesh)
+    if args.as_json:
+        print(json.dumps(catalog.to_dict(), indent=2, ensure_ascii=False))
+        return 0
+
+    type_counts: dict[str, int] = {}
+    for pose in catalog.poses:
+        key = f"{pose.floor_contact_type}-{pose.wall_contact_type}"
+        type_counts[key] = type_counts.get(key, 0) + 1
+
+    print(f"Mesh: {catalog.source}")
+    print(f"Convex support faces: {len(catalog.support_faces)}")
+    print(f"Theoretical floor-wall poses: {len(catalog.poses)}")
+    for contact_type, count in sorted(type_counts.items()):
+        print(f"  {contact_type}: {count}")
+    print("Point contacts excluded: yes")
+    print("Edge-edge contacts excluded as non-isolated: yes")
+    print("Angle-dependent stability filtering: pending (Step 3)")
+    return 0
+
+
+def _render(args: argparse.Namespace) -> int:
+    sheets = render_pose_sheets(
+        args.mesh,
+        args.output_dir,
+        poses_per_sheet=args.poses_per_sheet,
+        columns=args.columns,
+        dpi=args.dpi,
+    )
+    print(f"Rendered {len(sheets)} contact sheets:")
+    for sheet in sheets:
+        first_pose = sheet.pose_ids[0]
+        last_pose = sheet.pose_ids[-1]
+        print(f"  {sheet.path} (poses {first_pose}-{last_pose})")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:
         if args.command == "inspect":
             return _inspect(args)
+        if args.command == "catalog":
+            return _catalog(args)
+        if args.command == "render":
+            return _render(args)
     except (GeometryValidationError, ValueError) as exc:
         parser.error(str(exc))
     raise AssertionError(f"Unhandled command: {args.command}")
@@ -91,4 +150,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

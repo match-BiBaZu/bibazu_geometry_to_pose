@@ -51,3 +51,41 @@ uv run --extra dev pytest
 The command does not write result files. Add `--json` for machine-readable
 output.
 
+## Step 2: theoretical simultaneous-contact catalog
+
+Every maximal coplanar polygon on the convex hull is retained as a possible
+support face, including small sloped faces and chamfers. Candidate orientations
+are generated in both directions:
+
+- a convex-hull face on the floor plus an edge or face at the wall;
+- an edge or face on the floor plus a convex-hull face at the wall.
+
+Pure point contacts are pose transitions and are excluded. Edge-edge contact
+has a remaining rotational degree of freedom, so it is not an isolated,
+perturbation-resistant pose and is also excluded from the pose catalog. No
+alpha/beta stability decision is made in this step.
+
+```powershell
+uv run --extra dev chute-pose catalog "Werkstücke_STL_grob/Df1a.STL"
+```
+
+With the locked dependencies and tolerances, the Df1a baseline contains 9
+convex support faces and 108 unfiltered theoretical poses:
+
+- 48 floor-edge / wall-face poses;
+- 48 floor-face / wall-edge poses;
+- 12 floor-face / wall-face poses.
+
+These counts are regression-tested. They are not a prediction that all 108
+orientations are stable at `alpha = 45 deg`, `beta = 20 deg`; that filtering is
+the purpose of Step 3.
+
+Render all unfiltered candidates as grouped technical contact sheets:
+
+```powershell
+uv run --extra dev chute-pose render "Werkstücke_STL_grob/Df1a.STL" `
+  --output-dir "Poses_Found_Robust/Df1a_theoretical"
+```
+
+The plots show floor contacts in green, wall contacts in orange and vertices
+touching the common floor-wall seam in red.

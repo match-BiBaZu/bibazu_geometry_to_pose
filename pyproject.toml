@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Deterministic geometry and stability analysis for parts in a doubly inclined chute"
 requires-python = ">=3.11"
 dependencies = [
+    "matplotlib>=3.8,<4",
     "networkx>=3.2,<4",
     "numpy>=1.26,<3",
     "scipy>=1.11,<2",
@@ -25,4 +26,3 @@ packages = ["src/chute_pose"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-

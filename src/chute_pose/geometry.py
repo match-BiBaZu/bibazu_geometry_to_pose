@@ -75,13 +75,12 @@ class GeometryReport:
         return asdict(self)
 
 
-def inspect_mesh(
+def load_solid_mesh(
     mesh_path: str | Path,
     *,
     units: str = "mm",
-    angular_tolerance_deg: float = 0.1,
-) -> GeometryReport:
-    """Load and strictly validate a solid mesh.
+) -> trimesh.Trimesh:
+    """Load and strictly validate a solid mesh without silently repairing it.
 
     Step 1 deliberately rejects open or inconsistently wound meshes. Silent
     repair would make the center of mass dependent on library heuristics.
@@ -92,8 +91,6 @@ def inspect_mesh(
         raise GeometryValidationError(f"Mesh file does not exist: {path}")
     if units != "mm":
         raise GeometryValidationError("Step 1 currently accepts millimetres only.")
-    if not math_is_positive(angular_tolerance_deg):
-        raise GeometryValidationError("Angular tolerance must be positive.")
 
     loaded = trimesh.load_mesh(path, force="mesh", process=True)
     if not isinstance(loaded, trimesh.Trimesh):
@@ -112,6 +109,23 @@ def inspect_mesh(
         )
     if not mesh.is_volume or float(mesh.volume) <= 0.0:
         raise GeometryValidationError("The mesh does not describe a positive closed volume.")
+
+    return mesh
+
+
+def inspect_mesh(
+    mesh_path: str | Path,
+    *,
+    units: str = "mm",
+    angular_tolerance_deg: float = 0.1,
+) -> GeometryReport:
+    """Load a solid mesh and return its reproducible geometry report."""
+
+    path = Path(mesh_path).expanduser().resolve()
+    if not math_is_positive(angular_tolerance_deg):
+        raise GeometryValidationError("Angular tolerance must be positive.")
+
+    mesh = load_solid_mesh(path, units=units)
 
     hull = mesh.convex_hull
     hull_normals = _unique_oriented_normals(
@@ -142,4 +156,3 @@ def inspect_mesh(
 
 def math_is_positive(value: float) -> bool:
     return bool(np.isfinite(value) and value > 0.0)
-
