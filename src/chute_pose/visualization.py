@@ -117,6 +117,8 @@ def render_pose_sheets(
     columns: int = 6,
     dpi: int = 180,
     pose_ids: Iterable[int] | None = None,
+    sheet_title: str = "Df1a: theoretische Boden-Wand-Kontaktlagen",
+    filename_prefix: str = "Df1a",
 ) -> tuple[RenderedSheet, ...]:
     """Render the theoretical catalog as grouped, high-resolution PNG sheets."""
 
@@ -153,9 +155,7 @@ def render_pose_sheets(
             rows = math.ceil(len(page_poses) / columns)
             figure = plt.figure(figsize=(columns * 3.1, rows * 2.8), facecolor="white")
             figure.suptitle(
-                "Df1a: theoretische Boden-Wand-Kontaktlagen\n"
-                f"{group_name} | Seite {page_index}",
-                fontsize=14,
+                f"{sheet_title}\n{group_name} | Seite {page_index}", fontsize=14
             )
             for plot_index, pose in enumerate(page_poses, start=1):
                 axis = figure.add_subplot(rows, columns, plot_index, projection="3d")
@@ -175,7 +175,7 @@ def render_pose_sheets(
                 fontsize=9,
             )
             figure.tight_layout(rect=(0.0, 0.025, 1.0, 0.95))
-            filename = f"Df1a_{group_name}_page-{page_index:02d}.png"
+            filename = f"{filename_prefix}_{group_name}_page-{page_index:02d}.png"
             path = destination / filename
             figure.savefig(path, dpi=dpi, bbox_inches="tight")
             plt.close(figure)

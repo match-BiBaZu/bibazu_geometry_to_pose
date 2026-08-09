@@ -89,3 +89,46 @@ uv run --extra dev chute-pose render "Werkstücke_STL_grob/Df1a.STL" `
 
 The plots show floor contacts in green, wall contacts in orange and vertices
 touching the common floor-wall seam in red.
+
+## Step 3: force, moment and sliding-direction stability
+
+The observed onset of sliding occurred at `beta = 15 deg` while the chute was
+also tilted by `alpha = 45 deg`, with continuous floor and wall contact. Under
+the current assumption that the PTFE coefficient is equal at both surfaces,
+this gives
+
+```text
+mu_s = tan(beta) / (sin(alpha) + cos(alpha)) = 0.189469
+```
+
+This is an estimate of static friction. The kinetic coefficient during sliding
+is not known, so every pose is conservatively evaluated at 11 coefficients
+spanning `0 <= mu <= 0.189469`, rather than at one invented exact value.
+
+For each coefficient, a linear program distributes non-negative normal forces
+over the boundary vertices of the floor and wall contact regions. A pose passes
+when all of the following are true:
+
+- floor and wall forces balance the Y and Z components of gravity;
+- the contact forces produce zero net moment about the center of mass;
+- the required contact wrench lies strictly inside the available wrench set
+  (positive pressure margin, not on a tipping boundary);
+- the remaining X acceleration is non-negative, so motion is only downhill.
+
+This is a quasi-static sliding/tipping test, not a simulated drop test. At the
+Df1a operating point `alpha = 45 deg`, `beta = 20 deg`, 27 of the 108
+theoretical poses pass at every sampled coefficient: all 12 face-face poses,
+8 floor-edge/wall-face poses and 7 floor-face/wall-edge poses. Another 20 are
+friction-dependent candidates and are retained as uncertain rather than being
+silently discarded; 61 fail at every sampled coefficient.
+
+```powershell
+uv run --extra dev chute-pose stability "Werkstücke_STL_grob/Df1a.STL" `
+  --alpha 45 --beta 20 --onset-alpha 45 --onset-beta 15 `
+  --render-output-dir "Poses_Found_Robust/Df1a_stable"
+```
+
+The reported pressure margin is dimensionless. Zero means a transition/tipping
+boundary; larger positive values mean more reserve inside this particular
+contact-wrench model. It is useful for ranking poses, but is not yet an
+experimentally calibrated probability of occurrence.
