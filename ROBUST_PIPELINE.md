@@ -299,13 +299,17 @@ when every representation passes the finite-disturbance filter; all other
 retained classes are marked `metastable`. Rejected and merely friction-
 dependent catalog poses are not roadmap nodes.
 
-Four chute-fixed, right-handed actuation modes are supported. A negative X
-rotation is available only while the automatically selected largest support
-face is on the floor; positive X is available only while that face is on the
-wall. Y and Z accept both signs up to 180 degrees. Candidate endpoints must be
-pure rotations about the selected axis; combined commanded rotations are not
-created. Metastable classes may additionally have zero-actuation `passive_tip`
-edges found from low-barrier seated-energy paths about arbitrary axes.
+Chute-fixed, right-handed actuation modes are supported. A negative X rotation
+is available while the automatically selected largest support-face family is
+on the floor; positive X is available while that family is on the wall. The
+opposite directions, positive X on the floor and negative X on the wall, are
+also available when the smaller intrinsic in-plane span of the main face is
+strictly greater than 25 mm. This threshold can be changed with
+`--opposite-x-min-height-mm`. Y and Z accept both signs up to 180 degrees.
+Candidate endpoints must be pure rotations about the selected axis; combined
+commanded rotations are not created. Metastable classes may additionally have
+zero-actuation `passive_tip` edges found from low-barrier seated-energy paths
+about arbitrary axes.
 
 For an actuated edge, the one-dimensional seated-energy basin around the target
 is swept at one-degree resolution and its crest refined to 0.1 degrees. The
@@ -336,3 +340,5 @@ The current Df1a geometry is known to be wrong. Its output is therefore marked
 `provisional`; concrete adjacency and passive-tip results must be regenerated
 after the CAD replacement. The current replacement model produces 4 robust and
 7 metastable practical classes from 12 and 15 catalog representations.
+The SVG and PNG roadmap views embed a compact technical chute rendering in every
+node; the representative pose IDs remain underneath for unambiguous CLI lookup.

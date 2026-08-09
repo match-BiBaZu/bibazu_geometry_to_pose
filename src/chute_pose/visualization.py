@@ -138,6 +138,8 @@ def _draw_pose(
     mesh_vertices_centered: np.ndarray,
     mesh_faces: np.ndarray,
     pose_label: str | None = None,
+    *,
+    show_title: bool = True,
 ) -> None:
     rotation = np.asarray(pose.rotation_chute_from_part, dtype=float)
     translation = np.asarray(pose.translation_to_corner_mm, dtype=float)
@@ -195,13 +197,60 @@ def _draw_pose(
     ax.set_box_aspect(np.maximum(span, 0.35 * np.max(span)))
     ax.view_init(elev=24.0, azim=-58.0)
     ax.set_axis_off()
-    ax.set_title(
-        f"{pose_label or f'Pose {pose.pose_id}'}\n"
-        f"Boden: {_contact_label_de(pose.floor_contact_topology)}, "
-        f"Wand: {_contact_label_de(pose.wall_contact_topology)}",
-        fontsize=8,
-        pad=1,
+    if show_title:
+        ax.set_title(
+            f"{pose_label or f'Pose {pose.pose_id}'}\n"
+            f"Boden: {_contact_label_de(pose.floor_contact_topology)}, "
+            f"Wand: {_contact_label_de(pose.wall_contact_topology)}",
+            fontsize=8,
+            pad=1,
+        )
+
+
+def create_pose_thumbnails(
+    mesh_path: str | Path,
+    pose_ids: Iterable[int],
+    *,
+    width_px: int = 240,
+    height_px: int = 180,
+    dpi: int = 120,
+) -> dict[int, np.ndarray]:
+    """Render compact RGBA chute views for roadmap node representatives."""
+
+    if width_px <= 0 or height_px <= 0 or dpi <= 0:
+        raise ValueError("Thumbnail dimensions and dpi must be positive.")
+    selected_ids = tuple(dict.fromkeys(int(value) for value in pose_ids))
+    catalog = build_pose_catalog(mesh_path)
+    poses = {pose.pose_id: pose for pose in catalog.poses}
+    missing = set(selected_ids) - poses.keys()
+    if missing:
+        raise ValueError(f"Unknown pose ids: {sorted(missing)}")
+
+    mesh = load_solid_mesh(mesh_path)
+    vertices_centered = np.asarray(mesh.vertices, dtype=float) - np.asarray(
+        mesh.center_mass, dtype=float
     )
+    faces = np.asarray(mesh.faces, dtype=int)
+    thumbnails: dict[int, np.ndarray] = {}
+    for pose_id in selected_ids:
+        figure = plt.figure(
+            figsize=(width_px / dpi, height_px / dpi),
+            dpi=dpi,
+            facecolor="white",
+        )
+        axis = figure.add_subplot(111, projection="3d", computed_zorder=False)
+        _draw_pose(
+            axis,
+            poses[pose_id],
+            vertices_centered,
+            faces,
+            show_title=False,
+        )
+        figure.subplots_adjust(left=0.0, right=1.0, bottom=0.0, top=1.0)
+        figure.canvas.draw()
+        thumbnails[pose_id] = np.asarray(figure.canvas.buffer_rgba()).copy()
+        plt.close(figure)
+    return thumbnails
 
 
 def render_pose_sheets(

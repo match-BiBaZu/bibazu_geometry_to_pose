@@ -9,12 +9,14 @@ from chute_pose.roadmap import (
     RoadmapNode,
     find_best_route,
     geometric_reliability_score,
+    render_pose_roadmap,
 )
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DF1A_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Df1a.STL"
 DL1A_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Dl1a.STL"
+QL1I_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Ql1i.STL"
 
 
 def _node(node_id: int, kind: str = "robust") -> RoadmapNode:
@@ -59,7 +61,10 @@ def _roadmap(edges: tuple[RoadmapEdge, ...]) -> PoseRoadmap:
         symmetry_symbol="C1",
         symmetry_tolerance_mm=0.0,
         main_face_id=0,
+        main_face_ids=(0,),
         main_face_area_mm2=1.0,
+        main_face_min_span_mm=1.0,
+        opposite_x_min_height_mm=25.0,
         robust_barrier_threshold_mm=0.2,
         axis_tolerance_deg=1.0,
         nodes=(_node(1), _node(2), _node(3)),
@@ -68,31 +73,60 @@ def _roadmap(edges: tuple[RoadmapEdge, ...]) -> PoseRoadmap:
     )
 
 
-def test_df1a_roadmap_keeps_four_robust_and_seven_metastable_classes() -> None:
+def test_df1a_roadmap_keeps_four_robust_and_seven_metastable_classes(
+    tmp_path: Path,
+) -> None:
     roadmap = build_pose_roadmap(DF1A_STL)
 
     assert len(roadmap.nodes) == 11
     assert sum(node.kind == "robust" for node in roadmap.nodes) == 4
     assert sum(node.kind == "metastable" for node in roadmap.nodes) == 7
     assert roadmap.main_face_id == 5
+    assert roadmap.main_face_ids == (5,)
+    assert roadmap.main_face_min_span_mm > 25.0
     assert not roadmap.unresolved_metastable_node_ids
     assert all(node.cad_status == "provisional" for node in roadmap.nodes)
+
+    svg_path, png_path = render_pose_roadmap(roadmap, tmp_path / "Df1a_roadmap")
+    assert svg_path.stat().st_size > 10_000
+    assert png_path.stat().st_size > 10_000
 
     nodes = {node.node_id: node for node in roadmap.nodes}
     for edge in roadmap.edges:
         assert abs(edge.signed_angle_deg) <= 180.0 + 1e-8
-        if edge.actuation == "floor_main_neg_x":
-            assert edge.signed_angle_deg < 0.0
+        if edge.actuation in {"floor_main_neg_x", "floor_main_pos_x"}:
             assert nodes[edge.source].main_face_on_floor
-        elif edge.actuation == "wall_main_pos_x":
-            assert edge.signed_angle_deg > 0.0
+            if edge.actuation == "floor_main_neg_x":
+                assert edge.signed_angle_deg < 0.0
+            else:
+                assert edge.signed_angle_deg > 0.0
+        elif edge.actuation in {"wall_main_neg_x", "wall_main_pos_x"}:
             assert nodes[edge.source].main_face_on_wall
+            if edge.actuation == "wall_main_neg_x":
+                assert edge.signed_angle_deg < 0.0
+            else:
+                assert edge.signed_angle_deg > 0.0
         elif edge.actuation in {"free_y", "free_z"}:
             assert edge.transition_kind == "actuated"
         elif edge.actuation == "passive":
             assert edge.transition_kind == "passive_tip"
             assert edge.escape_barrier_mm is not None
             assert edge.target in nodes
+
+    actuations = {edge.actuation for edge in roadmap.edges}
+    assert "floor_main_pos_x" in actuations
+    assert "wall_main_neg_x" in actuations
+
+
+def test_ql1i_main_face_is_too_narrow_for_opposite_x_actions() -> None:
+    roadmap = build_pose_roadmap(QL1I_STL, geometry_status="verified")
+
+    assert len(roadmap.main_face_ids) == 4
+    assert roadmap.main_face_min_span_mm == pytest.approx(20.0)
+    assert not {
+        "floor_main_pos_x",
+        "wall_main_neg_x",
+    }.intersection(edge.actuation for edge in roadmap.edges)
 
 
 def test_geometric_score_rewards_wide_deep_capture_basin() -> None:

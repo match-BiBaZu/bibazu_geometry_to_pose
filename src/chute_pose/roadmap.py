@@ -14,6 +14,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 import networkx as nx
 import numpy as np
 from scipy.spatial.transform import Rotation
@@ -29,12 +30,19 @@ from .rocking import (
 )
 from .stability import analyze_pose_stability
 from .symmetry import detect_rotational_symmetry
+from .visualization import create_pose_thumbnails
 
 
 NodeKind = Literal["robust", "metastable"]
 TransitionKind = Literal["actuated", "passive_tip"]
 ActuationKind = Literal[
-    "floor_main_neg_x", "wall_main_pos_x", "free_y", "free_z", "passive"
+    "floor_main_neg_x",
+    "floor_main_pos_x",
+    "wall_main_neg_x",
+    "wall_main_pos_x",
+    "free_y",
+    "free_z",
+    "passive",
 ]
 
 
@@ -141,7 +149,10 @@ class PoseRoadmap:
     symmetry_symbol: str
     symmetry_tolerance_mm: float
     main_face_id: int
+    main_face_ids: tuple[int, ...]
     main_face_area_mm2: float
+    main_face_min_span_mm: float
+    opposite_x_min_height_mm: float
     robust_barrier_threshold_mm: float
     axis_tolerance_deg: float
     nodes: tuple[RoadmapNode, ...]
@@ -164,7 +175,10 @@ class PoseRoadmap:
             "symmetry_symbol": self.symmetry_symbol,
             "symmetry_tolerance_mm": self.symmetry_tolerance_mm,
             "main_face_id": self.main_face_id,
+            "main_face_ids": self.main_face_ids,
             "main_face_area_mm2": self.main_face_area_mm2,
+            "main_face_min_span_mm": self.main_face_min_span_mm,
+            "opposite_x_min_height_mm": self.opposite_x_min_height_mm,
             "robust_barrier_threshold_mm": self.robust_barrier_threshold_mm,
             "axis_tolerance_deg": self.axis_tolerance_deg,
             "node_counts": {
@@ -190,7 +204,15 @@ class PoseRoadmap:
             symmetry_symbol=str(value["symmetry_symbol"]),
             symmetry_tolerance_mm=float(value["symmetry_tolerance_mm"]),
             main_face_id=int(value["main_face_id"]),
+            main_face_ids=tuple(
+                int(item)
+                for item in value.get("main_face_ids", (value["main_face_id"],))
+            ),
             main_face_area_mm2=float(value["main_face_area_mm2"]),
+            main_face_min_span_mm=float(value.get("main_face_min_span_mm", 0.0)),
+            opposite_x_min_height_mm=float(
+                value.get("opposite_x_min_height_mm", 25.0)
+            ),
             robust_barrier_threshold_mm=float(value["robust_barrier_threshold_mm"]),
             axis_tolerance_deg=float(value["axis_tolerance_deg"]),
             nodes=tuple(RoadmapNode.from_dict(item) for item in value["nodes"]),
@@ -217,6 +239,8 @@ class RoutePlan:
 
 _ACTION_SPECS: dict[str, tuple[np.ndarray, tuple[float, float]]] = {
     "floor_main_neg_x": (np.array([1.0, 0.0, 0.0]), (-180.0, 0.0)),
+    "floor_main_pos_x": (np.array([1.0, 0.0, 0.0]), (0.0, 180.0)),
+    "wall_main_neg_x": (np.array([1.0, 0.0, 0.0]), (-180.0, 0.0)),
     "wall_main_pos_x": (np.array([1.0, 0.0, 0.0]), (0.0, 180.0)),
     "free_y": (np.array([0.0, 1.0, 0.0]), (-180.0, 180.0)),
     "free_z": (np.array([0.0, 0.0, 1.0]), (-180.0, 180.0)),
@@ -302,12 +326,30 @@ def _basin_half_width_deg(
 def _class_main_face_placement(
     pose_class: PracticalPoseClass,
     poses: dict[int, ContactPose],
-    main_face_id: int,
+    main_face_ids: tuple[int, ...],
 ) -> tuple[bool, bool]:
+    face_ids = set(main_face_ids)
     return (
-        all(main_face_id in poses[pose_id].floor_face_ids for pose_id in pose_class.pose_ids),
-        all(main_face_id in poses[pose_id].wall_face_ids for pose_id in pose_class.pose_ids),
+        all(
+            face_ids.intersection(poses[pose_id].floor_face_ids)
+            for pose_id in pose_class.pose_ids
+        ),
+        all(
+            face_ids.intersection(poses[pose_id].wall_face_ids)
+            for pose_id in pose_class.pose_ids
+        ),
     )
+
+
+def _planar_face_min_span_mm(points: np.ndarray) -> float:
+    """Return the smaller intrinsic PCA span of one planar support face."""
+
+    centered = np.asarray(points, dtype=float) - np.mean(points, axis=0)
+    _, _, axes = np.linalg.svd(centered, full_matrices=False)
+    coordinates = centered @ axes[:2].T
+    spans = np.ptp(coordinates, axis=0)
+    positive = spans[spans > 1e-8]
+    return float(np.min(positive)) if len(positive) else 0.0
 
 
 def _best_actuated_relation(
@@ -315,16 +357,21 @@ def _best_actuated_relation(
     target_class: PracticalPoseClass,
     poses: dict[int, ContactPose],
     action: str,
-    main_face_id: int,
+    main_face_ids: tuple[int, ...],
     axis_tolerance_deg: float,
 ) -> tuple[float, float, int, int] | None:
     axis, domain = _ACTION_SPECS[action]
+    face_ids = set(main_face_ids)
     best: tuple[float, float, int, int] | None = None
     for source_pose_id in source_class.pose_ids:
         source_pose = poses[source_pose_id]
-        if action == "floor_main_neg_x" and main_face_id not in source_pose.floor_face_ids:
+        if action.startswith("floor_main_") and not face_ids.intersection(
+            source_pose.floor_face_ids
+        ):
             continue
-        if action == "wall_main_pos_x" and main_face_id not in source_pose.wall_face_ids:
+        if action.startswith("wall_main_") and not face_ids.intersection(
+            source_pose.wall_face_ids
+        ):
             continue
         source_rotation = np.asarray(source_pose.rotation_chute_from_part, dtype=float)
         for target_pose_id in target_class.pose_ids:
@@ -342,9 +389,9 @@ def _best_actuated_relation(
                 continue
             signed_angle = math.degrees(angle_rad) * (1.0 if alignment >= 0.0 else -1.0)
             if abs(abs(signed_angle) - 180.0) <= 1e-7:
-                if action == "floor_main_neg_x":
+                if action in {"floor_main_neg_x", "wall_main_neg_x"}:
                     signed_angle = -180.0
-                elif action == "wall_main_pos_x":
+                elif action in {"floor_main_pos_x", "wall_main_pos_x"}:
                     signed_angle = 180.0
             if signed_angle < domain[0] - 1e-7 or signed_angle > domain[1] + 1e-7:
                 continue
@@ -361,7 +408,9 @@ def _actuated_edges(
     classes: tuple[PracticalPoseClass, ...],
     nodes_by_id: dict[int, RoadmapNode],
     poses: dict[int, ContactPose],
-    main_face_id: int,
+    main_face_ids: tuple[int, ...],
+    main_face_min_span_mm: float,
+    opposite_x_min_height_mm: float,
     vertices_centered: np.ndarray,
     gravity: np.ndarray,
     robust_barrier_threshold_mm: float,
@@ -379,13 +428,18 @@ def _actuated_edges(
             target_id = class_node_ids[target_class.class_id]
             for action, (axis, domain) in _ACTION_SPECS.items():
                 if (
-                    action == "floor_main_neg_x"
+                    action.startswith("floor_main_")
                     and not nodes_by_id[source_id].main_face_on_floor
                 ):
                     continue
                 if (
-                    action == "wall_main_pos_x"
+                    action.startswith("wall_main_")
                     and not nodes_by_id[source_id].main_face_on_wall
+                ):
+                    continue
+                if (
+                    action in {"floor_main_pos_x", "wall_main_neg_x"}
+                    and main_face_min_span_mm <= opposite_x_min_height_mm
                 ):
                     continue
                 relation = _best_actuated_relation(
@@ -393,7 +447,7 @@ def _actuated_edges(
                     target_class,
                     poses,
                     action,
-                    main_face_id,
+                    main_face_ids,
                     axis_tolerance_deg,
                 )
                 if relation is None:
@@ -576,12 +630,15 @@ def build_pose_roadmap(
     surface_displacement_tolerance_mm: float = 0.5,
     robust_barrier_threshold_mm: float = 0.20,
     minimum_face_face_braking_g: float = 0.10,
+    opposite_x_min_height_mm: float = 25.0,
     geometry_status: str = "provisional",
 ) -> PoseRoadmap:
     """Build the robust/metastable physical pose roadmap for one part."""
 
     if geometry_status not in {"provisional", "verified"}:
         raise ValueError("geometry_status must be 'provisional' or 'verified'.")
+    if opposite_x_min_height_mm < 0.0:
+        raise ValueError("opposite_x_min_height_mm must be non-negative.")
     catalog = build_pose_catalog(mesh_path)
     nominal = analyze_pose_stability(
         mesh_path,
@@ -637,13 +694,25 @@ def build_pose_roadmap(
         ),
     )
     main_face = max(catalog.support_faces, key=lambda value: value.area_mm2)
+    main_faces = tuple(
+        face
+        for face in catalog.support_faces
+        if math.isclose(face.area_mm2, main_face.area_mm2, rel_tol=1e-6, abs_tol=1e-6)
+    )
+    main_face_ids = tuple(face.face_id for face in main_faces)
+    main_face_min_span_mm = min(
+        _planar_face_min_span_mm(
+            hull_vertices_centered[np.asarray(face.vertex_indices, dtype=int)]
+        )
+        for face in main_faces
+    )
     poses = {pose.pose_id: pose for pose in catalog.poses}
     barriers = {value.pose_id: value for value in rocking.barriers}
     nodes: list[RoadmapNode] = []
     for pose_class in clustering.classes:
         representative = poses[pose_class.representative_pose_id]
         main_floor, main_wall = _class_main_face_placement(
-            pose_class, poses, main_face.face_id
+            pose_class, poses, main_face_ids
         )
         nodes.append(
             RoadmapNode(
@@ -671,7 +740,9 @@ def build_pose_roadmap(
         clustering.classes,
         nodes_by_id,
         poses,
-        main_face.face_id,
+        main_face_ids,
+        main_face_min_span_mm,
+        opposite_x_min_height_mm,
         hull_vertices_centered,
         gravity,
         robust_barrier_threshold_mm,
@@ -694,7 +765,10 @@ def build_pose_roadmap(
         symmetry_symbol=symmetry.symbol,
         symmetry_tolerance_mm=symmetry.tolerance_mm,
         main_face_id=main_face.face_id,
+        main_face_ids=main_face_ids,
         main_face_area_mm2=main_face.area_mm2,
+        main_face_min_span_mm=main_face_min_span_mm,
+        opposite_x_min_height_mm=opposite_x_min_height_mm,
         robust_barrier_threshold_mm=robust_barrier_threshold_mm,
         axis_tolerance_deg=angular_tolerance_deg,
         nodes=tuple(nodes),
@@ -795,6 +869,7 @@ def save_roadmap_graphml(roadmap: PoseRoadmap, path: str | Path) -> Path:
             pose_ids="/".join(str(value) for value in node.pose_ids),
             kind=node.kind,
             cad_status=node.cad_status,
+            main_face_min_span_mm=roadmap.main_face_min_span_mm,
             rocking_barrier_mm=node.rocking_barrier_mm,
             floor_contact=node.floor_contact_topology,
             wall_contact=node.wall_contact_topology,
@@ -832,7 +907,7 @@ def render_pose_roadmap(
     graph.add_nodes_from(node.node_id for node in roadmap.nodes)
     graph.add_edges_from((edge.source, edge.target, {"edge": edge}) for edge in roadmap.edges)
     positions = nx.spring_layout(graph, seed=42, k=1.25)
-    figure, axis = plt.subplots(figsize=(14, 9), facecolor="white")
+    figure, axis = plt.subplots(figsize=(16, 10), facecolor="white")
     axis.set_axis_off()
     robust = [node.node_id for node in roadmap.nodes if node.kind == "robust"]
     metastable = [node.node_id for node in roadmap.nodes if node.kind == "metastable"]
@@ -840,7 +915,7 @@ def render_pose_roadmap(
         graph,
         positions,
         nodelist=robust,
-        node_size=1650,
+        node_size=7200,
         node_color="#2b8cbe",
         edgecolors="#084081",
         linewidths=2.2,
@@ -850,20 +925,17 @@ def render_pose_roadmap(
         graph,
         positions,
         nodelist=metastable,
-        node_size=850,
+        node_size=4600,
         node_color="#e5e7eb",
         edgecolors="#6b7280",
         linewidths=1.5,
         ax=axis,
     )
     meta_collection.set_linestyle("--")
-    labels = {
-        node.node_id: "/".join(str(value) for value in node.pose_ids)
-        for node in roadmap.nodes
-    }
-    nx.draw_networkx_labels(graph, positions, labels=labels, font_size=8, ax=axis)
     colors = {
         "floor_main_neg_x": "#1f77b4",
+        "wall_main_neg_x": "#1f77b4",
+        "floor_main_pos_x": "#d62728",
         "wall_main_pos_x": "#d62728",
         "free_y": "#2ca02c",
         "free_z": "#9467bd",
@@ -884,12 +956,20 @@ def render_pose_roadmap(
             ax=axis,
         )
     edge_labels: dict[tuple[int, int], list[str]] = {}
+    action_labels = {
+        "floor_main_neg_x": "−X (Boden)",
+        "floor_main_pos_x": "+X (Boden, h>Grenze)",
+        "wall_main_neg_x": "−X (Wand, h>Grenze)",
+        "wall_main_pos_x": "+X (Wand)",
+        "free_y": "Y",
+        "free_z": "Z",
+    }
     for edge in roadmap.edges:
         if edge.transition_kind == "passive_tip":
             label = f"passiv Δh={edge.escape_barrier_mm:.3f}mm"
         else:
             label = (
-                f"{edge.actuation} {edge.signed_angle_deg:+.1f}° "
+                f"{action_labels[edge.actuation]} {edge.signed_angle_deg:+.1f}° "
                 f"w={edge.capture_width_deg:.1f}° s={edge.geometric_score:.3f}"
             )
         edge_labels.setdefault((edge.source, edge.target), []).append(label)
@@ -901,6 +981,42 @@ def render_pose_roadmap(
         rotate=False,
         ax=axis,
     )
+    thumbnails = create_pose_thumbnails(
+        roadmap.source, (node.node_id for node in roadmap.nodes)
+    )
+    for node in roadmap.nodes:
+        robust_node = node.kind == "robust"
+        image = OffsetImage(
+            thumbnails[node.node_id],
+            zoom=0.48 if robust_node else 0.37,
+        )
+        image.image.axes = axis
+        box = AnnotationBbox(
+            image,
+            positions[node.node_id],
+            frameon=True,
+            pad=0.06,
+            bboxprops={
+                "facecolor": "white",
+                "edgecolor": "#084081" if robust_node else "#6b7280",
+                "linewidth": 2.4 if robust_node else 1.5,
+                "linestyle": "solid" if robust_node else "dashed",
+            },
+            zorder=8,
+        )
+        axis.add_artist(box)
+        axis.annotate(
+            "/".join(str(value) for value in node.pose_ids),
+            positions[node.node_id],
+            xytext=(0, -69 if robust_node else -55),
+            textcoords="offset points",
+            ha="center",
+            va="top",
+            fontsize=7,
+            color="#111827",
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 0.8},
+            zorder=9,
+        )
     title = (
         f"{Path(roadmap.source).stem}: Posenroadmap — "
         f"{sum(node.kind == 'robust' for node in roadmap.nodes)} robust, "
@@ -908,8 +1024,8 @@ def render_pose_roadmap(
     )
     axis.set_title(title, fontsize=16, pad=18)
     legend_items = [
-        Line2D([0], [0], color=colors["floor_main_neg_x"], lw=2, label="−X, Hauptflaeche Boden"),
-        Line2D([0], [0], color=colors["wall_main_pos_x"], lw=2, label="+X, Hauptflaeche Wand"),
+        Line2D([0], [0], color=colors["floor_main_neg_x"], lw=2, label="−X-Rotation"),
+        Line2D([0], [0], color=colors["wall_main_pos_x"], lw=2, label="+X-Rotation"),
         Line2D([0], [0], color=colors["free_y"], lw=2, label="freie Y-Rotation"),
         Line2D([0], [0], color=colors["free_z"], lw=2, label="freie Z-Rotation"),
         Line2D([0], [0], color=colors["passive"], lw=1.5, ls="--", label="passives Kippen"),
@@ -925,6 +1041,19 @@ def render_pose_roadmap(
             ha="center",
             color="#b91c1c",
             fontsize=11,
+            weight="bold",
+        )
+    elif roadmap.unresolved_metastable_node_ids:
+        figure.text(
+            0.99,
+            0.02,
+            "Passive Folgekante ungeloest fuer: "
+            + "/".join(
+                str(value) for value in roadmap.unresolved_metastable_node_ids
+            ),
+            ha="right",
+            color="#92400e",
+            fontsize=9,
             weight="bold",
         )
     figure.tight_layout(rect=(0.01, 0.04, 0.99, 0.98))

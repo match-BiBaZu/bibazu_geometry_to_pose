@@ -147,6 +147,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--minimum-face-face-braking-g", type=float, default=0.10
     )
     roadmap_parser.add_argument(
+        "--opposite-x-min-height-mm",
+        type=float,
+        default=25.0,
+        help="Minimum intrinsic main-face height for +X on floor or -X on wall.",
+    )
+    roadmap_parser.add_argument(
         "--geometry-status",
         choices=("provisional", "verified"),
         default="provisional",
@@ -611,6 +617,7 @@ def _roadmap(args: argparse.Namespace) -> int:
         ),
         robust_barrier_threshold_mm=args.minimum_rocking_barrier_mm,
         minimum_face_face_braking_g=args.minimum_face_face_braking_g,
+        opposite_x_min_height_mm=args.opposite_x_min_height_mm,
         geometry_status=args.geometry_status,
     )
     paths = export_pose_roadmap(result, args.output_dir)
@@ -629,6 +636,20 @@ def _roadmap(args: argparse.Namespace) -> int:
     print(
         f"Directed transitions: {actuated_count} actuated, "
         f"{passive_count} passive"
+    )
+    print(
+        "Main-face family: "
+        + "/".join(str(value) for value in result.main_face_ids)
+        + f"; intrinsic minimum span: {result.main_face_min_span_mm:.3f} mm"
+    )
+    print(
+        "Opposite X directions: "
+        + (
+            "enabled"
+            if result.main_face_min_span_mm > result.opposite_x_min_height_mm
+            else "disabled"
+        )
+        + f" (threshold > {result.opposite_x_min_height_mm:.3f} mm)"
     )
     if result.unresolved_metastable_node_ids:
         print(
