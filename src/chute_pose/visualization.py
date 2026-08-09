@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 import matplotlib
 
@@ -59,6 +59,7 @@ def _draw_pose(
     mesh_vertices_centered: np.ndarray,
     mesh_faces: np.ndarray,
     hull_vertices_centered: np.ndarray,
+    pose_label: str | None = None,
 ) -> None:
     rotation = np.asarray(pose.rotation_chute_from_part, dtype=float)
     translation = np.asarray(pose.translation_to_corner_mm, dtype=float)
@@ -103,7 +104,8 @@ def _draw_pose(
     ax.view_init(elev=24.0, azim=-58.0)
     ax.set_axis_off()
     ax.set_title(
-        f"Pose {pose.pose_id} | Boden: {pose.floor_contact_type}, Wand: {pose.wall_contact_type}",
+        f"{pose_label or f'Pose {pose.pose_id}'} | "
+        f"Boden: {pose.floor_contact_type}, Wand: {pose.wall_contact_type}",
         fontsize=8,
         pad=1,
     )
@@ -119,6 +121,7 @@ def render_pose_sheets(
     pose_ids: Iterable[int] | None = None,
     sheet_title: str = "Df1a: theoretische Boden-Wand-Kontaktlagen",
     filename_prefix: str = "Df1a",
+    pose_labels: Mapping[int, str] | None = None,
 ) -> tuple[RenderedSheet, ...]:
     """Render the theoretical catalog as grouped, high-resolution PNG sheets."""
 
@@ -165,6 +168,7 @@ def render_pose_sheets(
                     mesh_vertices_centered,
                     mesh_faces,
                     hull_vertices_centered,
+                    pose_label=(pose_labels or {}).get(pose.pose_id),
                 )
 
             figure.text(

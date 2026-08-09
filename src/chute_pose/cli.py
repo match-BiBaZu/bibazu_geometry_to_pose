@@ -11,6 +11,8 @@ from .frame import ChuteFrame
 from .geometry import GeometryValidationError, inspect_mesh
 from .contacts import build_pose_catalog
 from .stability import analyze_pose_stability
+from .symmetry import detect_rotational_symmetry, reduce_catalog_by_symmetry
+from .step_verification import StepSupportUnavailable, verify_step_symmetry
 from .visualization import render_pose_sheets
 
 
@@ -50,12 +52,22 @@ def _build_parser() -> argparse.ArgumentParser:
     stability_parser.add_argument("--onset-alpha", type=float, default=45.0)
     stability_parser.add_argument("--onset-beta", type=float, default=15.0)
     stability_parser.add_argument("--mu-samples", type=int, default=11)
+    stability_parser.add_argument("--symmetry-tolerance-mm", type=float)
     stability_parser.add_argument("--json", action="store_true", dest="as_json")
     stability_parser.add_argument(
         "--render-output-dir",
         type=Path,
         help="Optionally render only poses stable at every sampled mu value.",
     )
+
+    symmetry_parser = subparsers.add_parser(
+        "symmetry", help="Detect STL symmetry, verify it with STEP, and group poses."
+    )
+    symmetry_parser.add_argument("mesh", type=Path)
+    symmetry_parser.add_argument("--step", type=Path)
+    symmetry_parser.add_argument("--tolerance-mm", type=float)
+    symmetry_parser.add_argument("--angular-tolerance-deg", type=float, default=0.25)
+    symmetry_parser.add_argument("--json", action="store_true", dest="as_json")
     return parser
 
 
@@ -151,6 +163,7 @@ def _render(args: argparse.Namespace) -> int:
 
 
 def _stability(args: argparse.Namespace) -> int:
+    catalog = build_pose_catalog(args.mesh)
     analysis = analyze_pose_stability(
         args.mesh,
         alpha_deg=args.alpha,
@@ -158,17 +171,36 @@ def _stability(args: argparse.Namespace) -> int:
         onset_alpha_deg=args.onset_alpha,
         onset_beta_deg=args.onset_beta,
         mu_samples=args.mu_samples,
+        catalog=catalog,
     )
+    symmetry = detect_rotational_symmetry(
+        args.mesh, tolerance_mm=args.symmetry_tolerance_mm
+    )
+    reduced = reduce_catalog_by_symmetry(catalog, symmetry)
+    stable_ids = set(analysis.stable_pose_ids)
+    stable_class_representatives = tuple(
+        min(stable_ids.intersection(value.pose_ids))
+        for value in reduced.classes
+        if stable_ids.intersection(value.pose_ids)
+    )
+    stable_pose_labels = {
+        min(stable_ids.intersection(value.pose_ids)): (
+            "Klasse " + "/".join(str(pose_id) for pose_id in value.pose_ids)
+        )
+        for value in reduced.classes
+        if stable_ids.intersection(value.pose_ids)
+    }
     if args.render_output_dir is not None:
         render_pose_sheets(
             args.mesh,
             args.render_output_dir,
-            pose_ids=analysis.stable_pose_ids,
+            pose_ids=stable_class_representatives,
             sheet_title=(
-                f"Df1a: robuste Gleitposen bei alpha={args.alpha:g} deg, "
+                f"Df1a: quasistatisch zulaessige Gleitlagen bei alpha={args.alpha:g} deg, "
                 f"beta={args.beta:g} deg"
             ),
             filename_prefix="Df1a_stable",
+            pose_labels=stable_pose_labels,
         )
 
     if args.as_json:
@@ -199,19 +231,89 @@ def _stability(args: argparse.Namespace) -> int:
         f"at {len(analysis.mu_values)} samples"
     )
     print(
-        f"Stable at every sampled coefficient: "
+        f"Quasi-statically admissible at every sampled coefficient: "
         f"{len(analysis.stable_pose_ids)}/{len(analysis.poses)}"
     )
     for contact_type, (stable_count, total_count) in sorted(type_counts.items()):
         print(f"  {contact_type}: {stable_count}/{total_count}")
-    print("Stable pose IDs: " + ", ".join(str(value) for value in analysis.stable_pose_ids))
+    print(
+        "Quasi-static pose IDs: "
+        + ", ".join(str(value) for value in analysis.stable_pose_ids)
+    )
     print(
         "Friction-dependent candidates: "
         f"{len(analysis.friction_dependent_pose_ids)}; "
         f"rejected at every sample: {len(analysis.rejected_pose_ids)}"
     )
+    print(
+        f"Practical rotation symmetry: {symmetry.symbol} "
+        f"(order {symmetry.order}, tolerance {symmetry.tolerance_mm:.6g} mm)"
+    )
+    print(
+        "Quasi-static pose classes after symmetry grouping: "
+        f"{len(stable_class_representatives)}"
+    )
     if args.render_output_dir is not None:
-        print(f"Rendered stable poses to: {args.render_output_dir.resolve()}")
+        print(f"Rendered quasi-static pose classes to: {args.render_output_dir.resolve()}")
+    return 0
+
+
+def _matching_step_path(mesh_path: Path) -> Path | None:
+    for candidate in mesh_path.parent.glob(f"{mesh_path.stem}.*"):
+        if candidate.suffix.lower() in {".step", ".stp"}:
+            return candidate
+    return None
+
+
+def _symmetry(args: argparse.Namespace) -> int:
+    catalog = build_pose_catalog(args.mesh)
+    symmetry = detect_rotational_symmetry(
+        args.mesh, tolerance_mm=args.tolerance_mm
+    )
+    reduced = reduce_catalog_by_symmetry(
+        catalog,
+        symmetry,
+        angular_tolerance_deg=args.angular_tolerance_deg,
+    )
+    step_path = args.step or _matching_step_path(args.mesh)
+    verification = verify_step_symmetry(step_path, symmetry) if step_path else None
+
+    if args.as_json:
+        result = reduced.to_dict()
+        result["step_verification"] = (
+            verification.to_dict() if verification is not None else None
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+
+    nontrivial_classes = [value for value in reduced.classes if len(value.pose_ids) > 1]
+    print(f"Mesh: {catalog.source}")
+    print(
+        f"STL symmetry candidate: {symmetry.symbol}, order {symmetry.order}, "
+        f"practical tolerance {symmetry.tolerance_mm:.6g} mm"
+    )
+    if verification is None:
+        print("STEP verification: no matching STEP file found")
+    else:
+        print(f"STEP verification: {verification.status}")
+        if verification.checks:
+            maximum_difference = max(
+                check.relative_symmetric_difference for check in verification.checks
+            )
+            print(
+                "Maximum STEP symmetric-volume difference: "
+                f"{100.0 * maximum_difference:.6f}%"
+            )
+    print(
+        f"Pose rotations: {len(catalog.poses)} -> "
+        f"{len(reduced.classes)} physical pose classes"
+    )
+    print(f"Non-singleton equivalence classes: {len(nontrivial_classes)}")
+    for value in nontrivial_classes:
+        print(
+            f"  class {value.class_id}, representative {value.representative_pose_id}: "
+            + ", ".join(str(pose_id) for pose_id in value.pose_ids)
+        )
     return 0
 
 
@@ -227,7 +329,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _render(args)
         if args.command == "stability":
             return _stability(args)
-    except (GeometryValidationError, ValueError) as exc:
+        if args.command == "symmetry":
+            return _symmetry(args)
+    except (GeometryValidationError, StepSupportUnavailable, ValueError) as exc:
         parser.error(str(exc))
     raise AssertionError(f"Unhandled command: {args.command}")
 

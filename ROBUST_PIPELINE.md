@@ -132,3 +132,50 @@ The reported pressure margin is dimensionless. Zero means a transition/tipping
 boundary; larger positive values mean more reserve inside this particular
 contact-wrench model. It is useful for ranking poses, but is not yet an
 experimentally calibrated probability of occurrence.
+
+## Discrete part symmetry and physical pose classes
+
+Catalog rotations are representations in the part coordinate system. If a
+part has a finite proper rotational symmetry group, rotations `R` and `R @ S`
+describe the same occupied geometry for every symmetry element `S`. They must
+therefore be reported as one physical pose class.
+
+Symmetry handling is deliberately two-stage:
+
+1. Principal-axis rotations are tested quickly against the complete STL vertex
+   set using a reported practical distance tolerance.
+2. A matching STEP file is loaded with OpenCascade and the candidate rotation
+   is checked using the Boolean symmetric-volume difference of the exact B-Rep.
+
+The STEP check distinguishes exact CAD symmetry from a process-level practical
+symmetry. It is optional so the normal STL pipeline does not require the large
+OpenCascade dependency:
+
+```powershell
+uv run --extra step chute-pose symmetry "Werkstücke_STL_grob/Df1a.STL" `
+  --tolerance-mm 0.5
+```
+
+For Df1a this finds practical `C3` symmetry. STEP does not confirm it as exact:
+the two rotated sectors have about `0.4038%` symmetric-volume difference and
+roughly `0.32 mm` vertex deviation. Nevertheless, the experimentally
+indistinguishable face-face representations are correctly grouped:
+
+```text
+(9, 12, 32)   (24, 26, 28)   (60, 61, 86)   (35, 105, 106)
+```
+
+For Ql1i the same automatic procedure finds `C4`; STEP confirms the fourfold
+symmetry exactly, and its 24 theoretical rotations reduce to 6 physical pose
+classes of four representations each.
+
+Edge/face configurations that rapidly switch between nearby orientations are
+kept separate from symmetry equivalence. They are transition or metastability
+candidates and require a later dynamic/contact-mode criterion; geometric
+similarity alone must not merge them into a stable pose.
+
+Consequently, the 27 results of the current force/moment filter should be read
+as *quasi-statically admissible*, not automatically as experimentally stable.
+For Df1a the 12 face-face representations (four physical classes) are accepted
+by observation. The remaining edge/face results stay flagged as transition or
+metastability candidates until that additional criterion is implemented.

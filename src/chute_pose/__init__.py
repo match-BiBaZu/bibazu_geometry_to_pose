@@ -11,6 +11,21 @@ from .stability import (
     analyze_pose_stability,
     estimate_equal_contact_friction,
 )
+from .symmetry import (
+    PoseEquivalenceClass,
+    RotationalSymmetryGroup,
+    SymmetryElement,
+    SymmetryReducedCatalog,
+    build_symmetry_reduced_catalog,
+    detect_rotational_symmetry,
+    reduce_catalog_by_symmetry,
+)
+from .step_verification import (
+    StepSupportUnavailable,
+    StepSymmetryElementCheck,
+    StepSymmetryVerification,
+    verify_step_symmetry,
+)
 
 __all__ = [
     "ChuteFrame",
@@ -28,4 +43,15 @@ __all__ = [
     "StabilitySample",
     "analyze_pose_stability",
     "estimate_equal_contact_friction",
+    "PoseEquivalenceClass",
+    "RotationalSymmetryGroup",
+    "SymmetryElement",
+    "SymmetryReducedCatalog",
+    "build_symmetry_reduced_catalog",
+    "detect_rotational_symmetry",
+    "reduce_catalog_by_symmetry",
+    "StepSupportUnavailable",
+    "StepSymmetryElementCheck",
+    "StepSymmetryVerification",
+    "verify_step_symmetry",
 ]
