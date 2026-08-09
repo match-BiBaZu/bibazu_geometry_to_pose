@@ -321,7 +321,8 @@ barrier_score = min(1, target_barrier / 0.20 mm)
 geometric_score = capture_fraction * barrier_score
 ```
 
-Generate the versioned JSON, GraphML, SVG and PNG files with:
+Generate the versioned JSON, experiment-editable YAML with its short Markdown
+guide, GraphML, SVG and PNG files with:
 
 ```powershell
 uv run chute-pose roadmap "Werkstücke_STL_grob/Df1a.STL" `

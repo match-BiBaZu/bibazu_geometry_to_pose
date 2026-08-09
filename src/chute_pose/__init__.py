@@ -55,6 +55,8 @@ from .roadmap import (
     find_best_route,
     geometric_reliability_score,
     load_roadmap_json,
+    roadmap_handover_dict,
+    save_roadmap_yaml,
 )
 
 __all__ = [
@@ -106,4 +108,6 @@ __all__ = [
     "find_best_route",
     "geometric_reliability_score",
     "load_roadmap_json",
+    "roadmap_handover_dict",
+    "save_roadmap_yaml",
 ]

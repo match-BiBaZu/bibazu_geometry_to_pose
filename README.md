@@ -1,5 +1,9 @@
 # Geometric Resting‑Pose Finder
 
+> **Projektübergabe:** Der aktuelle Entwicklungsstand, die Roadmap-/YAML-Schnittstelle,
+> bekannte CAD-Grenzen und die nächsten Arbeiten sind in
+> [`PROJECT_HANDOFF.md`](PROJECT_HANDOFF.md) zusammengefasst.
+
 > **New robust pipeline:** The stepwise replacement for the legacy pose
 > calculation starts in [`ROBUST_PIPELINE.md`](ROBUST_PIPELINE.md). Step 1
 > fixes the chute coordinate convention, validates solid input geometry and

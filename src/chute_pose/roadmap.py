@@ -859,6 +859,236 @@ def load_roadmap_json(path: str | Path) -> PoseRoadmap:
     return PoseRoadmap.from_dict(json.loads(source.read_text(encoding="utf-8")))
 
 
+def _yaml_scalar(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return json.dumps(value, allow_nan=False)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _yaml_lines(value: Any, indent: int = 0) -> list[str]:
+    """Serialize the handover schema without adding a runtime YAML dependency."""
+
+    prefix = " " * indent
+    if isinstance(value, dict):
+        lines: list[str] = []
+        for key, child in value.items():
+            if isinstance(child, (dict, list, tuple)) and child:
+                if isinstance(child, (list, tuple)) and all(
+                    not isinstance(item, (dict, list, tuple)) for item in child
+                ):
+                    inline = ", ".join(_yaml_scalar(item) for item in child)
+                    lines.append(f"{prefix}{key}: [{inline}]")
+                else:
+                    lines.append(f"{prefix}{key}:")
+                    lines.extend(_yaml_lines(child, indent + 2))
+            elif isinstance(child, (dict, list, tuple)):
+                lines.append(f"{prefix}{key}: {'{}' if isinstance(child, dict) else '[]'}")
+            else:
+                lines.append(f"{prefix}{key}: {_yaml_scalar(child)}")
+        return lines
+    if isinstance(value, (list, tuple)):
+        lines = []
+        for item in value:
+            if isinstance(item, (dict, list, tuple)):
+                lines.append(f"{prefix}-")
+                lines.extend(_yaml_lines(item, indent + 2))
+            else:
+                lines.append(f"{prefix}- {_yaml_scalar(item)}")
+        return lines
+    return [f"{prefix}{_yaml_scalar(value)}"]
+
+
+def _transition_action_handover(edge: RoadmapEdge) -> dict[str, Any]:
+    conditions = {
+        "floor_main_neg_x": ("x", "negative", "main_face_on_floor", None),
+        "floor_main_pos_x": (
+            "x",
+            "positive",
+            "main_face_on_floor",
+            "main_face_min_span_above_threshold",
+        ),
+        "wall_main_neg_x": (
+            "x",
+            "negative",
+            "main_face_on_wall",
+            "main_face_min_span_above_threshold",
+        ),
+        "wall_main_pos_x": ("x", "positive", "main_face_on_wall", None),
+        "free_y": ("y", "positive" if edge.signed_angle_deg > 0 else "negative", None, None),
+        "free_z": ("z", "positive" if edge.signed_angle_deg > 0 else "negative", None, None),
+        "passive": ("variable", "passive", None, None),
+    }
+    axis, direction, surface, additional = conditions[edge.actuation]
+    return {
+        "name": edge.actuation,
+        "axis": axis,
+        "axis_vector_chute": edge.axis_chute,
+        "direction": direction,
+        "commanded_angle_deg": (
+            edge.signed_angle_deg if edge.transition_kind == "actuated" else None
+        ),
+        "impulse_cost": edge.actuation_count,
+        "surface_requirement": surface,
+        "additional_requirement": additional,
+    }
+
+
+def roadmap_handover_dict(roadmap: PoseRoadmap) -> dict[str, Any]:
+    """Return the compact, experiment-editable YAML handover representation."""
+
+    return {
+        "format": "bibazu_pose_roadmap_handover",
+        "schema_version": 1,
+        "part": {
+            "name": Path(roadmap.source).stem,
+            "mesh_source": roadmap.source,
+            "cad_status": roadmap.geometry_status,
+        },
+        "chute": {
+            "coordinate_system": "right_handed",
+            "x": "downhill",
+            "y": "away_from_wall",
+            "z": "away_from_floor",
+            "alpha_deg": roadmap.alpha_deg,
+            "beta_deg": roadmap.beta_deg,
+        },
+        "classification": {
+            "symmetry": roadmap.symmetry_symbol,
+            "robust_pose_ids": tuple(
+                node.node_id for node in roadmap.nodes if node.kind == "robust"
+            ),
+            "metastable_pose_ids": tuple(
+                node.node_id for node in roadmap.nodes if node.kind == "metastable"
+            ),
+            "main_face_ids": roadmap.main_face_ids,
+            "main_face_min_span_mm": roadmap.main_face_min_span_mm,
+            "opposite_x_min_height_mm": roadmap.opposite_x_min_height_mm,
+            "robust_barrier_threshold_mm": roadmap.robust_barrier_threshold_mm,
+            "unresolved_metastable_pose_ids": roadmap.unresolved_metastable_node_ids,
+        },
+        "poses": [
+            {
+                "id": node.node_id,
+                "equivalent_catalog_pose_ids": node.pose_ids,
+                "stability": node.kind,
+                "planner_role": (
+                    "stable_target" if node.kind == "robust" else "transient_intermediate"
+                ),
+                "orientation_quaternion_xyzw": node.representative_quaternion_xyzw,
+                "contacts": {
+                    "floor": node.floor_contact_topology,
+                    "wall": node.wall_contact_topology,
+                    "main_face_on_floor": node.main_face_on_floor,
+                    "main_face_on_wall": node.main_face_on_wall,
+                },
+                "rocking_barrier_mm": node.rocking_barrier_mm,
+                "cad_status": node.cad_status,
+            }
+            for node in roadmap.nodes
+        ],
+        "transitions": [
+            {
+                "id": edge.edge_id,
+                "from_pose": edge.source,
+                "to_pose": edge.target,
+                "directed": True,
+                "type": edge.transition_kind,
+                "action": _transition_action_handover(edge),
+                "capture": {
+                    "interval_deg": edge.capture_interval_deg,
+                    "width_deg": edge.capture_width_deg,
+                    "fraction": edge.capture_fraction,
+                },
+                "geometry": {
+                    "target_barrier_score": edge.target_barrier_score,
+                    "geometric_score": edge.geometric_score,
+                    "axis_error_deg": edge.axis_error_deg,
+                    "passive_escape_barrier_mm": edge.escape_barrier_mm,
+                    "passive_saddle_angle_deg": edge.saddle_angle_deg,
+                },
+                "experimental": {
+                    "status": "untested",
+                    "trials": None,
+                    "successes": None,
+                    "empirical_success_rate": None,
+                    "difficulty_rating": None,
+                    "notes": "",
+                },
+            }
+            for edge in roadmap.edges
+        ],
+    }
+
+
+def save_roadmap_yaml(roadmap: PoseRoadmap, path: str | Path) -> Path:
+    destination = Path(path).expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    document = "---\n" + "\n".join(
+        _yaml_lines(roadmap_handover_dict(roadmap))
+    ) + "\n"
+    destination.write_text(document, encoding="utf-8")
+    return destination
+
+
+_YAML_README_DE = """# BiBaZu-Posenroadmap: YAML-Übergabe
+
+Die YAML-Datei enthält die physisch zusammengeführten Posen und alle aktuell
+bekannten **gerichteten** direkten Übergänge. Eine Kante von `from_pose` nach
+`to_pose` gilt nicht automatisch in Gegenrichtung.
+
+## Posen
+
+- `id` ist die Roadmap-ID und wird in `from_pose`/`to_pose` referenziert.
+- `classification.robust_pose_ids` listet alle stabilen Zielposen direkt auf;
+  `metastable_pose_ids` enthält die möglichen Zwischenlagen.
+- `equivalent_catalog_pose_ids` sind durch praktische Rotationssymmetrie
+  ununterscheidbare Darstellungen derselben physischen Pose.
+- `stability: robust` kennzeichnet eine beobachtungsgeeignete stabile Zielpose.
+- `stability: metastable` ist eine mögliche Zwischenlage; sie sollte nicht ohne
+  experimentelle Bestätigung als dauerhafte Zielpose verwendet werden.
+- Das Quaternion verwendet die Reihenfolge `[x, y, z, w]` und beschreibt die
+  Orientierung vom Bauteil- ins feste Rutschenkoordinatensystem.
+
+## Übergänge
+
+- `type: actuated` kostet einen Luftimpuls; `passive_tip` kostet keinen Impuls.
+- `axis`, `axis_vector_chute` und `direction` verwenden die feste Rutsche und die
+  Rechte-Hand-Regel. Der Sollwert steht in `commanded_angle_deg`.
+- `capture.interval_deg` und `capture.width_deg` beschreiben den geometrisch
+  berechneten Einfangbereich. `geometry.geometric_score` ist **keine
+  Erfolgswahrscheinlichkeit**.
+- Bei `surface_requirement` und `additional_requirement` müssen die genannten
+  Aktuatorbedingungen erfüllt sein.
+
+## Experimentelle Ergänzung
+
+Der Block `experimental` jeder Kante ist zum manuellen oder automatischen
+Ausfüllen vorgesehen:
+
+- `trials`: Anzahl der Versuche,
+- `successes`: erfolgreiche Übergänge zur angegebenen Zielpose,
+- `empirical_success_rate`: `successes / trials` zwischen 0 und 1,
+- `difficulty_rating`: frei wählbare gemeinsame Skala,
+- `notes`: Beobachtungen, Fehlermodi oder Versuchsbedingungen.
+
+Für die spätere Routenplanung sollte nach ausreichenden Versuchen bevorzugt
+`empirical_success_rate` verwendet werden. Bis dahin kann der geometrische
+Score als klar gekennzeichneter vorläufiger Ersatzwert dienen. Df1a ist wegen
+des derzeit fehlerhaften CAD weiterhin `provisional`.
+"""
+
+
+def save_roadmap_yaml_readme(path: str | Path) -> Path:
+    destination = Path(path).expanduser().resolve()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(_YAML_README_DE, encoding="utf-8")
+    return destination
+
+
 def save_roadmap_graphml(roadmap: PoseRoadmap, path: str | Path) -> Path:
     destination = Path(path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -1067,13 +1297,24 @@ def render_pose_roadmap(
 
 def export_pose_roadmap(
     roadmap: PoseRoadmap, output_dir: str | Path
-) -> tuple[Path, Path, Path, Path]:
+) -> tuple[Path, Path, Path, Path, Path, Path]:
     destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     stem = Path(roadmap.source).stem
     json_path = save_roadmap_json(roadmap, destination / f"{stem}_roadmap.json")
+    yaml_path = save_roadmap_yaml(roadmap, destination / f"{stem}_roadmap.yaml")
+    yaml_readme_path = save_roadmap_yaml_readme(
+        destination / "ROADMAP_YAML_README.md"
+    )
     graphml_path = save_roadmap_graphml(roadmap, destination / f"{stem}_roadmap.graphml")
     svg_path, png_path = render_pose_roadmap(
         roadmap, destination / f"{stem}_roadmap"
     )
-    return json_path, graphml_path, svg_path, png_path
+    return (
+        json_path,
+        yaml_path,
+        yaml_readme_path,
+        graphml_path,
+        svg_path,
+        png_path,
+    )

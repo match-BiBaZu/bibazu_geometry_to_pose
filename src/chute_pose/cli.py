@@ -127,7 +127,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     roadmap_parser = subparsers.add_parser(
         "roadmap",
-        help="Build the robust/metastable pose roadmap and export JSON/GraphML/images.",
+        help="Build the pose roadmap and export JSON/YAML/GraphML/images.",
     )
     roadmap_parser.add_argument("mesh", type=Path)
     roadmap_parser.add_argument("--output-dir", type=Path, required=True)

@@ -10,6 +10,9 @@ from chute_pose.roadmap import (
     find_best_route,
     geometric_reliability_score,
     render_pose_roadmap,
+    roadmap_handover_dict,
+    save_roadmap_yaml,
+    save_roadmap_yaml_readme,
 )
 
 
@@ -138,11 +141,14 @@ def test_geometric_score_rewards_wide_deep_capture_basin() -> None:
     assert tolerant > narrow
 
 
-def test_dl1a_end_face_targets_score_below_observed_rectangular_outlet_poses() -> None:
+def test_dl1a_free_axis_end_face_targets_score_below_observed_outlet_poses() -> None:
     roadmap = build_pose_roadmap(DL1A_STL, geometry_status="verified")
     incoming_scores: dict[int, list[float]] = {node.node_id: [] for node in roadmap.nodes}
     for edge in roadmap.edges:
-        if edge.transition_kind == "actuated":
+        # Normal X actions between symmetry-equivalent main faces are a
+        # separate actuator case. This regression compares the free Y/Z
+        # capture basins which make the end-face landings difficult in use.
+        if edge.actuation in {"free_y", "free_z"}:
             incoming_scores[edge.target].append(edge.geometric_score)
 
     observed_outlet_nodes = (15, 16, 31, 34)
@@ -174,3 +180,33 @@ def test_route_prefers_more_reliable_path_and_caps_actuations() -> None:
     assert direct_only.edge_ids == ("direct",)
     with pytest.raises(ValueError, match="between 0 and 4"):
         find_best_route(roadmap, 1, 3, max_actions=5)
+
+
+def test_yaml_handover_contains_editable_experimental_transition_fields(
+    tmp_path: Path,
+) -> None:
+    roadmap = _roadmap((_edge("direct", 1, 3, 0.5),))
+    handover = roadmap_handover_dict(roadmap)
+
+    assert handover["poses"][0]["planner_role"] == "stable_target"
+    transition = handover["transitions"][0]
+    assert transition["from_pose"] == 1
+    assert transition["to_pose"] == 3
+    assert transition["action"]["axis"] == "y"
+    assert transition["action"]["axis_vector_chute"] == (0.0, 1.0, 0.0)
+    assert transition["experimental"] == {
+        "status": "untested",
+        "trials": None,
+        "successes": None,
+        "empirical_success_rate": None,
+        "difficulty_rating": None,
+        "notes": "",
+    }
+
+    yaml_path = save_roadmap_yaml(roadmap, tmp_path / "roadmap.yaml")
+    readme_path = save_roadmap_yaml_readme(tmp_path / "README.md")
+    yaml_text = yaml_path.read_text(encoding="utf-8")
+    assert yaml_text.startswith("---\n")
+    assert 'format: "bibazu_pose_roadmap_handover"' in yaml_text
+    assert "empirical_success_rate: null" in yaml_text
+    assert "Erfolgswahrscheinlichkeit" in readme_path.read_text(encoding="utf-8")
