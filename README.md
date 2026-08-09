@@ -1,5 +1,12 @@
 # Geometric Resting‑Pose Finder
 
+> **New robust pipeline:** The stepwise replacement for the legacy pose
+> calculation starts in [`ROBUST_PIPELINE.md`](ROBUST_PIPELINE.md). Step 1
+> fixes the chute coordinate convention, validates solid input geometry and
+> verifies Df1a at `alpha = 45 deg`, `beta = 20 deg`. The legacy scripts
+> documented below remain unchanged while the new implementation is built and
+> tested incrementally.
+
 
 Determine every *geometrically possible* resting pose of a rigid 3‑D part on a slide such that
 
