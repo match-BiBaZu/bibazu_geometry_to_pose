@@ -270,3 +270,23 @@ uses at least the explicitly approved symmetry tolerance, so the measured
 default. Its practical 1 degree angular tolerance also consolidates support-
 facet variants which differ by about 0.864 degrees and only 0.304 mm occupied-
 surface displacement.
+
+## Full-mesh contact topology and rendering
+
+The convex-hull dimensions `edge` and `face` are retained internally for pose
+enumeration and stability equations, but they are not sufficient descriptions
+of the physical contact. Three non-collinear support points, for example, have
+dimension two even when they are an actual body edge plus one disconnected
+outlet point.
+
+Every catalog pose therefore also stores the exact full-STL contact vertices,
+the mesh edges which really connect them, and a topology label such as
+`2-point`, `edge`, `edge+point`, or `face`. Rendered sheets use these topology
+labels. All contact points are drawn larger with white outlines, and only true
+full-mesh contact edges are highlighted.
+
+For Qk1a class `283/519/532/947`, this changes the descriptive label from the
+ambiguous `floor-edge / wall-face` to the physically meaningful
+`floor-2-point / wall-edge+point`. The central outlet contacts were already
+included in the calculation; the earlier plot merely obscured them and called
+the non-collinear wall support a face.

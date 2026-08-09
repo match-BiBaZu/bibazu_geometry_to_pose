@@ -49,6 +49,12 @@ class ContactPose:
     wall_contact_dimension: int
     floor_contact_vertex_indices: tuple[int, ...]
     wall_contact_vertex_indices: tuple[int, ...]
+    floor_mesh_contact_vertex_indices: tuple[int, ...]
+    wall_mesh_contact_vertex_indices: tuple[int, ...]
+    floor_mesh_contact_edges: tuple[tuple[int, int], ...]
+    wall_mesh_contact_edges: tuple[tuple[int, int], ...]
+    floor_contact_topology: str
+    wall_contact_topology: str
     floor_face_ids: tuple[int, ...]
     wall_face_ids: tuple[int, ...]
     provenance: tuple[str, ...]
@@ -214,6 +220,74 @@ def _affine_dimension(points: NDArray[np.float64], tolerance: float) -> int:
     return int(np.count_nonzero(singular_values > tolerance))
 
 
+def _contact_topology(
+    contact_indices: NDArray[np.int64],
+    mesh_edges: NDArray[np.int64],
+    mesh_faces: NDArray[np.int64],
+) -> tuple[str, tuple[tuple[int, int], ...]]:
+    """Describe connected mesh features in one geometric support set.
+
+    Convex support dimension alone cannot distinguish a real face from, for
+    example, an edge plus a remote outlet point.  This routine uses the full
+    STL adjacency and deliberately reports disconnected point supports.
+    """
+
+    contact_set = {int(index) for index in contact_indices}
+    if not contact_set:
+        return "none", ()
+    contact_edges = tuple(
+        sorted(
+            tuple(sorted((int(first), int(second))))
+            for first, second in mesh_edges
+            if int(first) in contact_set and int(second) in contact_set
+        )
+    )
+    adjacency = {index: set() for index in contact_set}
+    for first, second in contact_edges:
+        adjacency[first].add(second)
+        adjacency[second].add(first)
+
+    components: list[set[int]] = []
+    remaining = set(contact_set)
+    while remaining:
+        seed = remaining.pop()
+        component = {seed}
+        stack = [seed]
+        while stack:
+            current = stack.pop()
+            neighbors = adjacency[current].intersection(remaining)
+            remaining.difference_update(neighbors)
+            component.update(neighbors)
+            stack.extend(neighbors)
+        components.append(component)
+
+    pieces: list[str] = []
+    for component in components:
+        contains_face = any(
+            all(int(vertex) in component for vertex in face) for face in mesh_faces
+        )
+        contains_edge = any(
+            first in component and second in component
+            for first, second in contact_edges
+        )
+        if contains_face:
+            pieces.append("face")
+        elif contains_edge:
+            pieces.append("edge")
+        else:
+            pieces.extend("point" for _ in component)
+
+    counts = {piece: pieces.count(piece) for piece in ("face", "edge", "point")}
+    terms: list[str] = []
+    for piece in ("face", "edge", "point"):
+        count = counts[piece]
+        if count == 1:
+            terms.append(piece)
+        elif count > 1:
+            terms.append(f"{count}-{piece}")
+    return "+".join(terms), contact_edges
+
+
 def _canonical_quaternion(rotation: Matrix3) -> tuple[float, float, float, float]:
     quaternion = Rotation.from_matrix(rotation).as_quat()
     if quaternion[3] < -1e-14:
@@ -239,6 +313,9 @@ def _face_ids_in_contact(
 def _make_candidate(
     rotation: Matrix3,
     vertices_centered: NDArray[np.float64],
+    mesh_vertices_centered: NDArray[np.float64],
+    mesh_edges: NDArray[np.int64],
+    mesh_faces: NDArray[np.int64],
     support_faces: tuple[SupportFace, ...],
     contact_tolerance_mm: float,
     provenance: str,
@@ -263,6 +340,22 @@ def _make_candidate(
     if floor_dimension < 2 and wall_dimension < 2:
         return None
 
+    rotated_mesh = (rotation @ mesh_vertices_centered.T).T
+    mesh_floor_indices = np.flatnonzero(
+        rotated_mesh[:, 2]
+        <= float(np.min(rotated_mesh[:, 2])) + contact_tolerance_mm
+    )
+    mesh_wall_indices = np.flatnonzero(
+        rotated_mesh[:, 1]
+        <= float(np.min(rotated_mesh[:, 1])) + contact_tolerance_mm
+    )
+    floor_topology, floor_mesh_edges = _contact_topology(
+        mesh_floor_indices, mesh_edges, mesh_faces
+    )
+    wall_topology, wall_mesh_edges = _contact_topology(
+        mesh_wall_indices, mesh_edges, mesh_faces
+    )
+
     matrix_tuple = tuple(
         tuple(float(value) for value in row) for row in np.asarray(rotation)
     )
@@ -275,6 +368,16 @@ def _make_candidate(
         wall_contact_dimension=wall_dimension,
         floor_contact_vertex_indices=tuple(int(index) for index in floor_indices),
         wall_contact_vertex_indices=tuple(int(index) for index in wall_indices),
+        floor_mesh_contact_vertex_indices=tuple(
+            int(index) for index in mesh_floor_indices
+        ),
+        wall_mesh_contact_vertex_indices=tuple(
+            int(index) for index in mesh_wall_indices
+        ),
+        floor_mesh_contact_edges=floor_mesh_edges,
+        wall_mesh_contact_edges=wall_mesh_edges,
+        floor_contact_topology=floor_topology,
+        wall_contact_topology=wall_topology,
         floor_face_ids=_face_ids_in_contact(floor_indices, support_faces),
         wall_face_ids=_face_ids_in_contact(wall_indices, support_faces),
         provenance=(provenance,),
@@ -323,6 +426,9 @@ def build_pose_catalog(
     vertices = np.asarray(hull.vertices, dtype=float).copy()
     center_mass = np.asarray(mesh.center_mass, dtype=float).copy()
     vertices_centered = vertices - center_mass
+    mesh_vertices_centered = np.asarray(mesh.vertices, dtype=float).copy() - center_mass
+    mesh_edges = np.asarray(mesh.edges_unique, dtype=int).copy()
+    mesh_faces = np.asarray(mesh.faces, dtype=int).copy()
     length_scale = float(np.max(hull.extents))
     distance_tolerance = max(length_scale * relative_distance_tolerance, 1e-9)
 
@@ -350,6 +456,9 @@ def build_pose_catalog(
                 candidate = _make_candidate(
                     rotation,
                     vertices_centered,
+                    mesh_vertices_centered,
+                    mesh_edges,
+                    mesh_faces,
                     support_faces,
                     distance_tolerance,
                     provenance=f"floor_face:{face.face_id}",
@@ -370,6 +479,9 @@ def build_pose_catalog(
                 candidate = _make_candidate(
                     rotation,
                     vertices_centered,
+                    mesh_vertices_centered,
+                    mesh_edges,
+                    mesh_faces,
                     support_faces,
                     distance_tolerance,
                     provenance=f"wall_face:{face.face_id}",

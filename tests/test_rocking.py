@@ -18,6 +18,12 @@ PARTS = REPOSITORY_ROOT / "Werkstücke_STL_grob"
 def test_qk1a_observed_diagonal_pose_has_deeper_finite_barrier() -> None:
     mesh_path = PARTS / "Qk1a.STL"
     catalog = build_pose_catalog(mesh_path)
+    pose_283 = catalog.poses[283]
+    assert pose_283.floor_contact_topology == "2-point"
+    assert pose_283.wall_contact_topology == "edge+point"
+    assert len(pose_283.floor_mesh_contact_vertex_indices) == 2
+    assert len(pose_283.wall_mesh_contact_vertex_indices) == 3
+    assert len(pose_283.wall_mesh_contact_edges) == 1
     analysis = analyze_rocking_barriers(
         mesh_path,
         pose_ids=[164, 518, 519],
