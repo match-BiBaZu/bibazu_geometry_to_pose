@@ -45,6 +45,17 @@ from .rocking import (
     analyze_rocking_barriers,
     filter_finite_disturbance_robustness,
 )
+from .roadmap import (
+    PoseRoadmap,
+    RoadmapEdge,
+    RoadmapNode,
+    RoutePlan,
+    build_pose_roadmap,
+    export_pose_roadmap,
+    find_best_route,
+    geometric_reliability_score,
+    load_roadmap_json,
+)
 
 __all__ = [
     "ChuteFrame",
@@ -86,4 +97,13 @@ __all__ = [
     "analyze_rocking_barriers",
     "FiniteDisturbanceFilterResult",
     "filter_finite_disturbance_robustness",
+    "PoseRoadmap",
+    "RoadmapEdge",
+    "RoadmapNode",
+    "RoutePlan",
+    "build_pose_roadmap",
+    "export_pose_roadmap",
+    "find_best_route",
+    "geometric_reliability_score",
+    "load_roadmap_json",
 ]

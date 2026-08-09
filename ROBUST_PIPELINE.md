@@ -290,3 +290,49 @@ ambiguous `floor-edge / wall-face` to the physically meaningful
 `floor-2-point / wall-edge+point`. The central outlet contacts were already
 included in the calculation; the earlier plot merely obscured them and called
 the non-collinear wall support a face.
+
+## Pose roadmap and axis-constrained transitions
+
+The roadmap retains every pose which is quasi-statically admissible across the
+sampled friction range. Practical symmetry classes are marked `robust` only
+when every representation passes the finite-disturbance filter; all other
+retained classes are marked `metastable`. Rejected and merely friction-
+dependent catalog poses are not roadmap nodes.
+
+Four chute-fixed, right-handed actuation modes are supported. A negative X
+rotation is available only while the automatically selected largest support
+face is on the floor; positive X is available only while that face is on the
+wall. Y and Z accept both signs up to 180 degrees. Candidate endpoints must be
+pure rotations about the selected axis; combined commanded rotations are not
+created. Metastable classes may additionally have zero-actuation `passive_tip`
+edges found from low-barrier seated-energy paths about arbitrary axes.
+
+For an actuated edge, the one-dimensional seated-energy basin around the target
+is swept at one-degree resolution and its crest refined to 0.1 degrees. The
+reported score is deliberately geometric rather than a probability:
+
+```text
+capture_fraction = capture_width / available_action_angle_span
+barrier_score = min(1, target_barrier / 0.20 mm)
+geometric_score = capture_fraction * barrier_score
+```
+
+Generate the versioned JSON, GraphML, SVG and PNG files with:
+
+```powershell
+uv run chute-pose roadmap "Werkstücke_STL_grob/Df1a.STL" `
+  --output-dir "Poses_Found_Robust/Df1a_roadmap_provisional"
+```
+
+Find the highest-scoring nominal open-loop route with at most four impulses:
+
+```powershell
+uv run chute-pose route `
+  "Poses_Found_Robust/Df1a_roadmap_provisional/Df1a_roadmap.json" `
+  --start-pose 12 --target-pose 61 --max-actions 4
+```
+
+The current Df1a geometry is known to be wrong. Its output is therefore marked
+`provisional`; concrete adjacency and passive-tip results must be regenerated
+after the CAD replacement. The current replacement model produces 4 robust and
+7 metastable practical classes from 12 and 15 catalog representations.

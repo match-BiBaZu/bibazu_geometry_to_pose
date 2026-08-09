@@ -26,6 +26,12 @@ from .rocking import (
 from .symmetry import detect_rotational_symmetry, reduce_catalog_by_symmetry
 from .step_verification import StepSupportUnavailable, verify_step_symmetry
 from .visualization import render_pose_sheets
+from .roadmap import (
+    build_pose_roadmap,
+    export_pose_roadmap,
+    find_best_route,
+    load_roadmap_json,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -118,6 +124,43 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     disturbance_parser.add_argument("--render-output-dir", type=Path)
     disturbance_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    roadmap_parser = subparsers.add_parser(
+        "roadmap",
+        help="Build the robust/metastable pose roadmap and export JSON/GraphML/images.",
+    )
+    roadmap_parser.add_argument("mesh", type=Path)
+    roadmap_parser.add_argument("--output-dir", type=Path, required=True)
+    roadmap_parser.add_argument("--alpha", type=float, default=45.0)
+    roadmap_parser.add_argument("--beta", type=float, default=20.0)
+    roadmap_parser.add_argument("--onset-alpha", type=float, default=45.0)
+    roadmap_parser.add_argument("--onset-beta", type=float, default=15.0)
+    roadmap_parser.add_argument("--symmetry-tolerance-mm", type=float, default=0.5)
+    roadmap_parser.add_argument("--axis-tolerance-deg", type=float, default=1.0)
+    roadmap_parser.add_argument(
+        "--surface-displacement-tolerance-mm", type=float, default=0.5
+    )
+    roadmap_parser.add_argument(
+        "--minimum-rocking-barrier-mm", type=float, default=0.20
+    )
+    roadmap_parser.add_argument(
+        "--minimum-face-face-braking-g", type=float, default=0.10
+    )
+    roadmap_parser.add_argument(
+        "--geometry-status",
+        choices=("provisional", "verified"),
+        default="provisional",
+    )
+    roadmap_parser.add_argument("--json", action="store_true", dest="as_json")
+
+    route_parser = subparsers.add_parser(
+        "route", help="Find the highest-scoring open-loop route in a roadmap JSON."
+    )
+    route_parser.add_argument("roadmap", type=Path)
+    route_parser.add_argument("--start-pose", type=int, required=True)
+    route_parser.add_argument("--target-pose", type=int, required=True)
+    route_parser.add_argument("--max-actions", type=int, default=4)
+    route_parser.add_argument("--output", type=Path)
     return parser
 
 
@@ -554,6 +597,70 @@ def _disturbance(args: argparse.Namespace) -> int:
     return 0
 
 
+def _roadmap(args: argparse.Namespace) -> int:
+    result = build_pose_roadmap(
+        args.mesh,
+        alpha_deg=args.alpha,
+        beta_deg=args.beta,
+        onset_alpha_deg=args.onset_alpha,
+        onset_beta_deg=args.onset_beta,
+        symmetry_tolerance_mm=args.symmetry_tolerance_mm,
+        angular_tolerance_deg=args.axis_tolerance_deg,
+        surface_displacement_tolerance_mm=(
+            args.surface_displacement_tolerance_mm
+        ),
+        robust_barrier_threshold_mm=args.minimum_rocking_barrier_mm,
+        minimum_face_face_braking_g=args.minimum_face_face_braking_g,
+        geometry_status=args.geometry_status,
+    )
+    paths = export_pose_roadmap(result, args.output_dir)
+    if args.as_json:
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+        return 0
+    robust_count = sum(node.kind == "robust" for node in result.nodes)
+    metastable_count = sum(node.kind == "metastable" for node in result.nodes)
+    actuated_count = sum(edge.transition_kind == "actuated" for edge in result.edges)
+    passive_count = sum(edge.transition_kind == "passive_tip" for edge in result.edges)
+    print(f"Mesh: {result.source}")
+    print(
+        f"Roadmap nodes: {len(result.nodes)} "
+        f"({robust_count} robust, {metastable_count} metastable)"
+    )
+    print(
+        f"Directed transitions: {actuated_count} actuated, "
+        f"{passive_count} passive"
+    )
+    if result.unresolved_metastable_node_ids:
+        print(
+            "Unresolved metastable nodes: "
+            + ", ".join(str(value) for value in result.unresolved_metastable_node_ids)
+        )
+    print(f"Geometry status: {result.geometry_status}")
+    for path in paths:
+        print(f"  {path}")
+    return 0
+
+
+def _route(args: argparse.Namespace) -> int:
+    roadmap = load_roadmap_json(args.roadmap)
+    route = find_best_route(
+        roadmap,
+        args.start_pose,
+        args.target_pose,
+        max_actions=args.max_actions,
+    )
+    payload = route.to_dict()
+    output = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+    if args.output is not None:
+        destination = args.output.expanduser().resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(output, encoding="utf-8")
+        print(destination)
+    else:
+        print(output, end="")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -570,6 +677,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _symmetry(args)
         if args.command == "disturbance":
             return _disturbance(args)
+        if args.command == "roadmap":
+            return _roadmap(args)
+        if args.command == "route":
+            return _route(args)
     except (GeometryValidationError, StepSupportUnavailable, ValueError) as exc:
         parser.error(str(exc))
     raise AssertionError(f"Unhandled command: {args.command}")
