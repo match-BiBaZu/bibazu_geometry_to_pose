@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 from dataclasses import asdict, dataclass
 import heapq
+from io import BytesIO
 import json
 import math
 from pathlib import Path
@@ -847,8 +849,28 @@ def find_best_route(
 def save_roadmap_json(roadmap: PoseRoadmap, path: str | Path) -> Path:
     destination = Path(path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
+    payload = roadmap.to_dict()
+    try:
+        thumbnails = create_pose_thumbnails(
+            roadmap.source,
+            (node.node_id for node in roadmap.nodes),
+            width_px=240,
+            height_px=180,
+            dpi=120,
+        )
+        for node_payload in payload["nodes"]:
+            pose_id = int(node_payload["node_id"])
+            buffer = BytesIO()
+            plt.imsave(buffer, thumbnails[pose_id], format="png")
+            node_payload["thumbnail_png_base64"] = base64.b64encode(
+                buffer.getvalue()
+            ).decode("ascii")
+    except (OSError, RuntimeError, ValueError):
+        # JSON stays usable for route planning even when a source mesh is no
+        # longer available at its recorded path.
+        pass
     destination.write_text(
-        json.dumps(roadmap.to_dict(), indent=2, ensure_ascii=False) + "\n",
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     return destination

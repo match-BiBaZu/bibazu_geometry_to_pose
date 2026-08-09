@@ -343,3 +343,5 @@ after the CAD replacement. The current replacement model produces 4 robust and
 7 metastable practical classes from 12 and 15 catalog representations.
 The SVG and PNG roadmap views embed a compact technical chute rendering in every
 node; the representative pose IDs remain underneath for unambiguous CLI lookup.
+The JSON export also embeds each representative view as `thumbnail_png_base64`
+so downstream calibration GUIs can display poses without loading the source mesh.

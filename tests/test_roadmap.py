@@ -1,3 +1,5 @@
+import base64
+import json
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,7 @@ from chute_pose.roadmap import (
     geometric_reliability_score,
     render_pose_roadmap,
     roadmap_handover_dict,
+    save_roadmap_json,
     save_roadmap_yaml,
     save_roadmap_yaml_readme,
 )
@@ -93,6 +96,10 @@ def test_df1a_roadmap_keeps_four_robust_and_seven_metastable_classes(
     svg_path, png_path = render_pose_roadmap(roadmap, tmp_path / "Df1a_roadmap")
     assert svg_path.stat().st_size > 10_000
     assert png_path.stat().st_size > 10_000
+    json_path = save_roadmap_json(roadmap, tmp_path / "Df1a_roadmap.json")
+    json_payload = json.loads(json_path.read_text(encoding="utf-8"))
+    thumbnail_data = json_payload["nodes"][0]["thumbnail_png_base64"]
+    assert base64.b64decode(thumbnail_data, validate=True).startswith(b"\x89PNG")
 
     nodes = {node.node_id: node for node in roadmap.nodes}
     for edge in roadmap.edges:

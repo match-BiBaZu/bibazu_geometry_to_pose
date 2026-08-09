@@ -2,9 +2,9 @@
 
 Stand: 9. August 2026  
 Repository: `https://github.com/match-BiBaZu/bibazu_geometry_to_pose`  
-Referenzbasis bei Erstellung: Branch `Tobias_tuning`, Commit `a35abfd`  
-Zusätzlicher Arbeitsstand: YAML-Roadmap-Export, YAML-Anleitung und dieses Dokument
-sind lokal implementiert, aber zum Zeitpunkt der Erstellung noch nicht eingecheckt.
+Referenzbasis: Branch `Tobias_tuning`, Commit `a6233b1`
+Zusätzlicher lokaler Arbeitsstand: selbstständige JSON-Posenvorschaubilder für
+die Pressure Control GUI.
 
 ## 1. Ziel des Projekts
 
@@ -201,6 +201,13 @@ ROADMAP_YAML_README.md
 <Part>_roadmap.png
 ```
 
+Die JSON bettet fuer jeden Knoten ein kompaktes PNG als
+`thumbnail_png_base64` ein. Sie kann deshalb von der Pressure Control GUI ohne
+Zugriff auf Mesh oder Matplotlib als visuelle Kalibrieruebergabe geladen werden.
+Der Loader bleibt tolerant gegenueber aelteren JSON-Dateien ohne Vorschaubild.
+Die experimentelle YAML enthaelt absichtlich keine Base64-Bilder und bleibt
+damit gut diff- und editierbar.
+
 Die YAML ist für die experimentelle Übergabe gedacht. Sie enthält robuste und
 metastabile Posen, alle gerichteten direkten Übergänge und je Kante einen leeren
 Block:
@@ -339,6 +346,7 @@ Aktueller Stand: **31 bestandene Tests**. Die Suite deckt unter anderem ab:
 - Dl1a-Einfangscore-Regression,
 - Routenpriorisierung und Vier-Impuls-Grenze,
 - Roadmapbilder und experimentelle YAML-Felder.
+- selbststaendige JSON-Posenvorschaubilder fuer die Pressure Control GUI.
 
 Die vollständige Suite benötigt auf dem aktuellen Rechner ungefähr 2.5 Minuten.
 Für pytest-`--basetemp` möglichst ein Verzeichnis unter `%TEMP%` verwenden, damit
