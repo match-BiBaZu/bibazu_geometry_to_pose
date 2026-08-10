@@ -4,9 +4,19 @@ import numpy as np
 
 from chute_pose import build_pose_catalog
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DF1A_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Df1a.STL"
+KK1A_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Kk1a.STL"
+
+
+def test_kk1a_continuous_symmetry_removes_faceted_circle_pose_duplicates() -> None:
+    catalog = build_pose_catalog(KK1A_STL)
+
+    assert catalog.continuous_symmetry_axis_part is not None
+    assert len(catalog.support_faces) == 5
+    assert len(catalog.poses) == 4
+    assert sum(pose.floor_contact_type == "face" for pose in catalog.poses) == 2
+    assert sum(pose.wall_contact_type == "face" for pose in catalog.poses) == 2
 
 
 def test_df1a_catalog_contains_all_convex_support_faces() -> None:

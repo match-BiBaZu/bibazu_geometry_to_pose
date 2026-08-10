@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import math
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +12,7 @@ from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
 from .contacts import PoseCatalog, build_pose_catalog
-from .geometry import load_solid_mesh
+from .geometry import detect_continuous_revolution_axis, load_solid_mesh
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,10 +40,15 @@ class RotationalSymmetryGroup:
     symbol: str
     tolerance_mm: float
     elements: tuple[SymmetryElement, ...]
+    continuous_axis_part: tuple[float, float, float] | None = None
 
     @property
     def order(self) -> int:
         return len(self.elements)
+
+    @property
+    def is_continuous(self) -> bool:
+        return self.continuous_axis_part is not None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -51,6 +56,8 @@ class RotationalSymmetryGroup:
             "symbol": self.symbol,
             "order": self.order,
             "tolerance_mm": self.tolerance_mm,
+            "continuous": self.is_continuous,
+            "continuous_axis_part": self.continuous_axis_part,
             "elements": [element.to_dict() for element in self.elements],
         }
 
@@ -149,6 +156,26 @@ def detect_rotational_symmetry(
     if not math.isfinite(used_tolerance) or used_tolerance <= 0.0:
         raise ValueError("tolerance_mm must be a positive finite number.")
 
+    continuous = detect_continuous_revolution_axis(
+        mesh,
+        tolerance_mm=used_tolerance,
+        relative_tolerance=relative_tolerance,
+    )
+    if continuous is not None:
+        identity = SymmetryElement(
+            element_id=0,
+            rotation_part_from_part=_rotation_tuple(np.eye(3)),
+            angle_deg=0.0,
+            mapping_error_mm=continuous.maximum_support_variation_mm,
+        )
+        return RotationalSymmetryGroup(
+            source=str(Path(mesh_path).expanduser().resolve()),
+            symbol="Cinf",
+            tolerance_mm=float(used_tolerance),
+            elements=(identity,),
+            continuous_axis_part=continuous.axis_part,
+        )
+
     vertex_tree = cKDTree(vertices)
     _, principal_axes = np.linalg.eigh(np.asarray(mesh.moment_inertia, dtype=float))
     rotations: list[tuple[np.ndarray, float]] = [(np.eye(3), 0.0)]
@@ -226,7 +253,7 @@ def reduce_catalog_by_symmetry(
     ]
     parents = list(range(len(catalog.poses)))
 
-    if symmetry.order == 1:
+    if symmetry.order == 1 and not symmetry.is_continuous:
         return SymmetryReducedCatalog(
             symmetry=symmetry,
             classes=tuple(
@@ -254,11 +281,21 @@ def reduce_catalog_by_symmetry(
 
     for first in range(len(pose_rotations)):
         for second in range(first + 1, len(pose_rotations)):
-            relative = pose_rotations[first].T @ pose_rotations[second]
-            if any(
-                _rotation_distance(relative, symmetry_rotation) <= tolerance
-                for symmetry_rotation in symmetry_rotations
-            ):
+            if symmetry.continuous_axis_part is not None:
+                axis = np.asarray(symmetry.continuous_axis_part, dtype=float)
+                first_axis = pose_rotations[first] @ axis
+                second_axis = pose_rotations[second] @ axis
+                separation = math.acos(
+                    float(np.clip(np.dot(first_axis, second_axis), -1.0, 1.0))
+                )
+                equivalent = separation <= tolerance
+            else:
+                relative = pose_rotations[first].T @ pose_rotations[second]
+                equivalent = any(
+                    _rotation_distance(relative, symmetry_rotation) <= tolerance
+                    for symmetry_rotation in symmetry_rotations
+                )
+            if equivalent:
                 union(first, second)
 
     grouped: dict[int, list[int]] = {}

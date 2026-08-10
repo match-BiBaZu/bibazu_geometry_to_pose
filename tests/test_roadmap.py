@@ -18,10 +18,10 @@ from chute_pose.roadmap import (
     save_roadmap_yaml_readme,
 )
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DF1A_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Df1a.STL"
 DL1A_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Dl1a.STL"
+KK1A_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Kk1a.STL"
 QL1I_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Ql1i.STL"
 
 
@@ -137,6 +137,17 @@ def test_ql1i_main_face_is_too_narrow_for_opposite_x_actions() -> None:
         "floor_main_pos_x",
         "wall_main_neg_x",
     }.intersection(edge.actuation for edge in roadmap.edges)
+
+
+def test_kk1a_continuous_symmetry_yields_two_robust_but_disconnected_poses() -> None:
+    roadmap = build_pose_roadmap(KK1A_STL)
+
+    assert roadmap.symmetry_symbol == "Cinf"
+    assert [node.node_id for node in roadmap.nodes] == [0, 1]
+    assert all(node.kind == "robust" for node in roadmap.nodes)
+    assert all(node.rocking_barrier_mm > 1.4 for node in roadmap.nodes)
+    assert roadmap.main_face_min_span_mm < 25.0
+    assert roadmap.edges == ()
 
 
 def test_geometric_score_rewards_wide_deep_capture_basin() -> None:

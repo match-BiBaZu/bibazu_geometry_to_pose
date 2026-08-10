@@ -8,17 +8,18 @@ module measures the finite centre-of-mass lift needed to leave such a pose.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import math
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 
 from .contacts import ContactPose, PoseCatalog, build_pose_catalog
+from .disturbance import DisturbanceAnalysis
 from .frame import ChuteFrame
 from .geometry import load_solid_mesh
-from .disturbance import DisturbanceAnalysis
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +89,21 @@ def _fibonacci_axes(count: int) -> np.ndarray:
     return np.vstack((axes, np.eye(3), -np.eye(3)))
 
 
+def _axes_tangent_to_symmetry_direction(
+    symmetry_axis_chute: np.ndarray, count: int
+) -> np.ndarray:
+    """Sample quotient-space rocking axes for an SO(2)-symmetric part."""
+
+    axis = np.asarray(symmetry_axis_chute, dtype=float)
+    axis /= np.linalg.norm(axis)
+    first = np.eye(3)[int(np.argmin(np.abs(axis)))]
+    first -= axis * float(np.dot(axis, first))
+    first /= np.linalg.norm(first)
+    second = np.cross(axis, first)
+    angles = np.linspace(0.0, 2.0 * math.pi, count, endpoint=False)
+    return np.cos(angles)[:, None] * first + np.sin(angles)[:, None] * second
+
+
 def _seated_potential_per_mass(
     points_by_axis: np.ndarray, gravity: np.ndarray
 ) -> np.ndarray:
@@ -123,8 +139,14 @@ def _pose_rocking_barrier(
     excursion_deg: float,
     angle_steps: int,
     length_scale_mm: float,
+    continuous_symmetry_axis_part: np.ndarray | None = None,
 ) -> RockingBarrier:
     rotation = np.asarray(pose.rotation_chute_from_part, dtype=float)
+    if continuous_symmetry_axis_part is not None:
+        axes = _axes_tangent_to_symmetry_direction(
+            rotation @ continuous_symmetry_axis_part,
+            len(axes),
+        )
     points = (rotation @ vertices_centered.T).T
     baseline = float(_seated_potential_per_mass(points[None, :, :], gravity)[0])
     path_peak = np.full(len(axes), baseline, dtype=float)
@@ -199,9 +221,13 @@ def analyze_rocking_barriers(
         mesh.center_mass, dtype=float
     )
     length_scale = max(float(np.max(hull.extents)), 1e-9)
+    continuous_symmetry = pose_catalog.continuous_symmetry_axis_part is not None
+    effective_excursion_deg = 90.0 if continuous_symmetry else excursion_deg
+    effective_angle_steps = max(angle_steps, 180) if continuous_symmetry else angle_steps
+    effective_axis_samples = min(axis_samples, 720) if continuous_symmetry else axis_samples
     gravity = ChuteFrame(alpha_deg=alpha_deg, beta_deg=beta_deg).gravity_chute()
     gravity_magnitude = float(np.linalg.norm(gravity))
-    axes = _fibonacci_axes(axis_samples)
+    axes = _fibonacci_axes(effective_axis_samples)
     barriers = tuple(
         _pose_rocking_barrier(
             pose,
@@ -209,9 +235,16 @@ def analyze_rocking_barriers(
             gravity,
             gravity_magnitude,
             axes,
-            excursion_deg,
-            angle_steps,
+            effective_excursion_deg,
+            effective_angle_steps,
             length_scale,
+            (
+                None
+                if pose_catalog.continuous_symmetry_axis_part is None
+                else np.asarray(
+                    pose_catalog.continuous_symmetry_axis_part, dtype=float
+                )
+            ),
         )
         for pose in selected
     )
@@ -219,9 +252,9 @@ def analyze_rocking_barriers(
         source=str(Path(mesh_path).expanduser().resolve()),
         alpha_deg=alpha_deg,
         beta_deg=beta_deg,
-        excursion_deg=excursion_deg,
-        angle_steps=angle_steps,
-        axis_samples=axis_samples,
+        excursion_deg=effective_excursion_deg,
+        angle_steps=effective_angle_steps,
+        axis_samples=effective_axis_samples,
         length_scale_mm=length_scale,
         barriers=barriers,
     )

@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
 import math
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial import ConvexHull
 from scipy.spatial.transform import Rotation
 
-from .geometry import load_solid_mesh
-
+from .geometry import detect_continuous_revolution_axis, load_solid_mesh
 
 Vector3 = NDArray[np.float64]
 Matrix3 = NDArray[np.float64]
@@ -85,6 +85,7 @@ class PoseCatalog:
     poses: tuple[ContactPose, ...]
     contact_tolerance_mm: float
     rotation_tolerance_rad: float
+    continuous_symmetry_axis_part: tuple[float, float, float] | None = None
     point_contacts_excluded: bool = True
     edge_edge_contacts_excluded: bool = True
 
@@ -97,6 +98,7 @@ class PoseCatalog:
             "poses": [pose.to_dict() for pose in self.poses],
             "contact_tolerance_mm": self.contact_tolerance_mm,
             "rotation_tolerance_rad": self.rotation_tolerance_rad,
+            "continuous_symmetry_axis_part": self.continuous_symmetry_axis_part,
             "point_contacts_excluded": self.point_contacts_excluded,
             "edge_edge_contacts_excluded": self.edge_edge_contacts_excluded,
         }
@@ -186,6 +188,54 @@ def _extract_support_faces(
             area_mm2=float(group["area"]),
         )
         for face_id, group in enumerate(groups)
+    )
+
+
+def _reduce_continuous_face_orbits(
+    support_faces: tuple[SupportFace, ...],
+    axis_part: tuple[float, float, float],
+    center_mass_part: NDArray[np.float64],
+    *,
+    angular_tolerance_deg: float,
+    distance_tolerance_mm: float,
+) -> tuple[SupportFace, ...]:
+    """Keep one representative plane from every SO(2) face orbit."""
+
+    axis = np.asarray(axis_part, dtype=float)
+    axis /= np.linalg.norm(axis)
+    center_mass = np.asarray(center_mass_part, dtype=float)
+    angular_tolerance = math.sin(math.radians(angular_tolerance_deg))
+    groups: list[list[SupportFace]] = []
+    signatures: list[tuple[float, float]] = []
+    for face in support_faces:
+        axial_normal = float(np.dot(face.normal_part, axis))
+        centered_offset = face.plane_offset_mm - float(
+            np.dot(face.normal_part, center_mass)
+        )
+        match = next(
+            (
+                index
+                for index, (known_axial, known_offset) in enumerate(signatures)
+                if abs(axial_normal - known_axial) <= angular_tolerance
+                and abs(centered_offset - known_offset) <= distance_tolerance_mm
+            ),
+            None,
+        )
+        if match is None:
+            signatures.append((axial_normal, centered_offset))
+            groups.append([face])
+        else:
+            groups[match].append(face)
+    representatives = [max(group, key=lambda face: face.area_mm2) for group in groups]
+    representatives.sort(
+        key=lambda face: (
+            round(float(np.dot(face.normal_part, axis)), 10),
+            round(face.plane_offset_mm, 10),
+            face.face_id,
+        )
+    )
+    return tuple(
+        replace(face, face_id=index) for index, face in enumerate(representatives)
     )
 
 
@@ -302,7 +352,7 @@ def _canonical_quaternion(rotation: Matrix3) -> tuple[float, float, float, float
 def _face_ids_in_contact(
     contact_indices: NDArray[np.int64], support_faces: tuple[SupportFace, ...]
 ) -> tuple[int, ...]:
-    contact_set = set(int(index) for index in contact_indices)
+    contact_set = {int(index) for index in contact_indices}
     return tuple(
         face.face_id
         for face in support_faces
@@ -406,6 +456,96 @@ def _add_candidate(
     candidates.append(candidate)
 
 
+def _continuous_axisymmetric_candidates(
+    end_faces: tuple[SupportFace, ...],
+    vertices_centered: NDArray[np.float64],
+    mesh_vertices_centered: NDArray[np.float64],
+    mesh_edges: NDArray[np.int64],
+    mesh_faces: NDArray[np.int64],
+    support_faces: tuple[SupportFace, ...],
+    contact_tolerance_mm: float,
+) -> list[ContactPose]:
+    """Construct the isolated floor-wall poses of a body of revolution.
+
+    A lateral-lateral contact retains a free rotational degree of freedom and
+    is therefore an excluded edge-edge transition.  An isolated pose exists
+    only when one planar end face contacts one chute plane and the revolved
+    lateral profile supplies a line contact on the other plane.
+    """
+
+    candidates: list[ContactPose] = []
+    for face in end_faces:
+        normal = np.asarray(face.normal_part, dtype=float)
+        floor_alignment = _rotation_from_to(normal, np.array([0.0, 0.0, -1.0]))
+        floor_aligned = (floor_alignment @ vertices_centered.T).T
+        floor_candidate: ContactPose | None = None
+        for edge_start, edge_end in _silhouette_edges(
+            floor_aligned, (0, 1), contact_tolerance_mm
+        ):
+            edge = edge_end - edge_start
+            theta = -math.atan2(float(edge[1]), float(edge[0]))
+            for candidate_theta in (theta, theta + math.pi):
+                floor_candidate = _make_candidate(
+                    _rotation_axis(2, candidate_theta) @ floor_alignment,
+                    vertices_centered,
+                    mesh_vertices_centered,
+                    mesh_edges,
+                    mesh_faces,
+                    support_faces,
+                    contact_tolerance_mm,
+                    provenance=f"continuous_floor_end_face:{face.face_id}",
+                )
+                if floor_candidate is not None:
+                    break
+            if floor_candidate is not None:
+                break
+        if floor_candidate is not None:
+            candidates.append(
+                replace(
+                    floor_candidate,
+                    floor_contact_dimension=2,
+                    wall_contact_dimension=1,
+                    floor_contact_topology="face",
+                    wall_contact_topology="edge",
+                )
+            )
+
+        wall_alignment = _rotation_from_to(normal, np.array([0.0, -1.0, 0.0]))
+        wall_aligned = (wall_alignment @ vertices_centered.T).T
+        wall_candidate: ContactPose | None = None
+        for edge_start, edge_end in _silhouette_edges(
+            wall_aligned, (0, 2), contact_tolerance_mm
+        ):
+            edge = edge_end - edge_start
+            theta = math.atan2(float(edge[1]), float(edge[0]))
+            for candidate_theta in (theta, theta + math.pi):
+                wall_candidate = _make_candidate(
+                    _rotation_axis(1, candidate_theta) @ wall_alignment,
+                    vertices_centered,
+                    mesh_vertices_centered,
+                    mesh_edges,
+                    mesh_faces,
+                    support_faces,
+                    contact_tolerance_mm,
+                    provenance=f"continuous_wall_end_face:{face.face_id}",
+                )
+                if wall_candidate is not None:
+                    break
+            if wall_candidate is not None:
+                break
+        if wall_candidate is not None:
+            candidates.append(
+                replace(
+                    wall_candidate,
+                    floor_contact_dimension=1,
+                    wall_contact_dimension=2,
+                    floor_contact_topology="edge",
+                    wall_contact_topology="face",
+                )
+            )
+    return candidates
+
+
 def build_pose_catalog(
     mesh_path: str | Path,
     *,
@@ -437,9 +577,40 @@ def build_pose_catalog(
         angular_tolerance_deg=angular_tolerance_deg,
         distance_tolerance_mm=distance_tolerance,
     )
+    continuous_symmetry = detect_continuous_revolution_axis(mesh)
+    if continuous_symmetry is not None:
+        support_faces = _reduce_continuous_face_orbits(
+            support_faces,
+            continuous_symmetry.axis_part,
+            center_mass,
+            angular_tolerance_deg=angular_tolerance_deg,
+            distance_tolerance_mm=max(
+                distance_tolerance, continuous_symmetry.tolerance_mm
+            ),
+        )
     candidates: list[ContactPose] = []
 
-    for face in support_faces:
+    if continuous_symmetry is not None:
+        axis = np.asarray(continuous_symmetry.axis_part, dtype=float)
+        largest_area = max(face.area_mm2 for face in support_faces)
+        end_faces = tuple(
+            face
+            for face in support_faces
+            if abs(float(np.dot(face.normal_part, axis)))
+            >= math.cos(math.radians(angular_tolerance_deg))
+            and face.area_mm2 >= 0.25 * largest_area
+        )
+        candidates = _continuous_axisymmetric_candidates(
+            end_faces,
+            vertices_centered,
+            mesh_vertices_centered,
+            mesh_edges,
+            mesh_faces,
+            support_faces,
+            distance_tolerance,
+        )
+
+    for face in () if continuous_symmetry is not None else support_faces:
         normal = np.asarray(face.normal_part, dtype=float)
 
         # Anchor this face on the floor, then rotate around floor normal Z
@@ -501,4 +672,9 @@ def build_pose_catalog(
         poses=tuple(candidates),
         contact_tolerance_mm=distance_tolerance,
         rotation_tolerance_rad=rotation_tolerance_rad,
+        continuous_symmetry_axis_part=(
+            None
+            if continuous_symmetry is None
+            else continuous_symmetry.axis_part
+        ),
     )

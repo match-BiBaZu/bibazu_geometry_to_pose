@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import math
-from typing import Any, Iterable
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
+from typing import Any
 
 import numpy as np
 from scipy.cluster.hierarchy import fcluster, linkage
@@ -56,7 +57,20 @@ def _pair_distance(
     symmetry_rotations: tuple[np.ndarray, ...],
     angular_tolerance_rad: float,
     displacement_tolerance_mm: float,
+    continuous_axis_part: np.ndarray | None = None,
 ) -> float:
+    if continuous_axis_part is not None:
+        first_axis = first @ continuous_axis_part
+        second_axis = second @ continuous_axis_part
+        angular = math.acos(
+            float(np.clip(np.dot(first_axis, second_axis), -1.0, 1.0))
+        )
+        radius = float(np.max(np.linalg.norm(vertices_centered, axis=1)))
+        displacement = 2.0 * radius * math.sin(0.5 * angular)
+        return max(
+            angular / angular_tolerance_rad,
+            displacement / displacement_tolerance_mm,
+        )
     best = math.inf
     for symmetry in symmetry_rotations:
         equivalent_first = first @ symmetry
@@ -101,7 +115,7 @@ def cluster_practical_contact_poses(
         raise ValueError(
             "surface_displacement_tolerance_mm must be positive and finite."
         )
-    requested = sorted(set(int(pose_id) for pose_id in pose_ids))
+    requested = sorted({int(pose_id) for pose_id in pose_ids})
     poses_by_id = {pose.pose_id: pose for pose in catalog.poses}
     missing = set(requested) - poses_by_id.keys()
     if missing:
@@ -116,6 +130,11 @@ def cluster_practical_contact_poses(
         )
         if symmetry is not None
         else (np.eye(3),)
+    )
+    continuous_axis = (
+        np.asarray(symmetry.continuous_axis_part, dtype=float)
+        if symmetry is not None and symmetry.continuous_axis_part is not None
+        else None
     )
     angular_tolerance = math.radians(angular_tolerance_deg)
     grouped_by_contact: dict[tuple[int, int], list[int]] = {}
@@ -144,6 +163,7 @@ def cluster_practical_contact_poses(
                     symmetry_rotations,
                     angular_tolerance,
                     surface_displacement_tolerance_mm,
+                    continuous_axis,
                 )
                 distances[first, second] = distance
                 distances[second, first] = distance

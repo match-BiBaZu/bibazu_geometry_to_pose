@@ -3,35 +3,35 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import json
+from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 
-from .frame import ChuteFrame
-from .geometry import GeometryValidationError, inspect_mesh, load_solid_mesh
 from .contacts import build_pose_catalog
-from .stability import analyze_pose_stability
 from .disturbance import (
     analyze_disturbance_robustness,
     filter_disturbance_robustness,
 )
 from .equivalence import cluster_practical_contact_poses
-from .rocking import (
-    analyze_rocking_barriers,
-    filter_finite_disturbance_robustness,
-)
-from .symmetry import detect_rotational_symmetry, reduce_catalog_by_symmetry
-from .step_verification import StepSupportUnavailable, verify_step_symmetry
-from .visualization import render_pose_sheets
+from .frame import ChuteFrame
+from .geometry import GeometryValidationError, inspect_mesh, load_solid_mesh
 from .roadmap import (
     build_pose_roadmap,
     export_pose_roadmap,
     find_best_route,
     load_roadmap_json,
 )
+from .rocking import (
+    analyze_rocking_barriers,
+    filter_finite_disturbance_robustness,
+)
+from .stability import analyze_pose_stability
+from .step_verification import StepSupportUnavailable, verify_step_symmetry
+from .symmetry import detect_rotational_symmetry, reduce_catalog_by_symmetry
+from .visualization import render_pose_sheets
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -276,7 +276,10 @@ def _stability(args: argparse.Namespace) -> int:
         args.mesh, tolerance_mm=args.symmetry_tolerance_mm
     )
     verification = None
-    if args.symmetry_tolerance_mm is not None:
+    if detected_symmetry.is_continuous:
+        symmetry = detected_symmetry
+        symmetry_policy = "continuous_convex_support_pretest"
+    elif args.symmetry_tolerance_mm is not None:
         symmetry = detected_symmetry
         symmetry_policy = "explicit_practical_tolerance"
     elif detected_symmetry.order == 1:
@@ -410,7 +413,11 @@ def _symmetry(args: argparse.Namespace) -> int:
         angular_tolerance_deg=args.angular_tolerance_deg,
     )
     step_path = args.step or _matching_step_path(args.mesh)
-    verification = verify_step_symmetry(step_path, symmetry) if step_path else None
+    verification = (
+        verify_step_symmetry(step_path, symmetry)
+        if step_path and not symmetry.is_continuous
+        else None
+    )
 
     if args.as_json:
         result = reduced.to_dict()
@@ -423,10 +430,16 @@ def _symmetry(args: argparse.Namespace) -> int:
     nontrivial_classes = [value for value in reduced.classes if len(value.pose_ids) > 1]
     print(f"Mesh: {catalog.source}")
     print(
-        f"STL symmetry candidate: {symmetry.symbol}, order {symmetry.order}, "
+        f"STL symmetry candidate: {symmetry.symbol}, "
+        f"{'continuous' if symmetry.is_continuous else f'order {symmetry.order}'}, "
         f"practical tolerance {symmetry.tolerance_mm:.6g} mm"
     )
-    if verification is None:
+    if symmetry.is_continuous and step_path is not None:
+        print(
+            "STEP verification: finite Boolean rotation check skipped for Cinf; "
+            "convex-support result remains provisional"
+        )
+    elif verification is None:
         print("STEP verification: no matching STEP file found")
     else:
         print(f"STEP verification: {verification.status}")

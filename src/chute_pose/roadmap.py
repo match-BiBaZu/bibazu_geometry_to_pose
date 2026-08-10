@@ -3,25 +3,25 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import asdict, dataclass
 import heapq
-from io import BytesIO
 import json
 import math
+from dataclasses import asdict, dataclass
+from io import BytesIO
 from pathlib import Path
-from typing import Any, Iterable, Literal
+from typing import Any, Literal
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
-from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 import networkx as nx
 import numpy as np
+from matplotlib.lines import Line2D
+from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from scipy.spatial.transform import Rotation
 
-from .contacts import ContactPose, PoseCatalog, build_pose_catalog
+from .contacts import ContactPose, build_pose_catalog
 from .disturbance import analyze_disturbance_robustness
 from .equivalence import PracticalPoseClass, cluster_practical_contact_poses
 from .frame import ChuteFrame
@@ -33,7 +33,6 @@ from .rocking import (
 from .stability import analyze_pose_stability
 from .symmetry import detect_rotational_symmetry
 from .visualization import create_pose_thumbnails
-
 
 NodeKind = Literal["robust", "metastable"]
 TransitionKind = Literal["actuated", "passive_tip"]
@@ -65,7 +64,7 @@ class RoadmapNode:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "RoadmapNode":
+    def from_dict(cls, value: dict[str, Any]) -> RoadmapNode:
         return cls(
             node_id=int(value["node_id"]),
             pose_ids=tuple(int(item) for item in value["pose_ids"]),
@@ -110,7 +109,7 @@ class RoadmapEdge:
         return result
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "RoadmapEdge":
+    def from_dict(cls, value: dict[str, Any]) -> RoadmapEdge:
         interval = value.get("capture_interval_deg")
         return cls(
             edge_id=str(value["edge_id"]),
@@ -194,7 +193,7 @@ class PoseRoadmap:
         }
 
     @classmethod
-    def from_dict(cls, value: dict[str, Any]) -> "PoseRoadmap":
+    def from_dict(cls, value: dict[str, Any]) -> PoseRoadmap:
         if int(value.get("schema_version", 0)) != 1:
             raise ValueError("Unsupported roadmap schema version.")
         return cls(
@@ -511,7 +510,7 @@ def _geodesic_escape(
         return None
     axis = rotvec / angle_rad
     total_angle_deg = math.degrees(angle_rad)
-    sample_count = max(2, int(math.ceil(total_angle_deg / step_deg)) + 1)
+    sample_count = max(2, math.ceil(total_angle_deg / step_deg) + 1)
     sample_angles = np.linspace(0.0, total_angle_deg, sample_count)
     heights = np.asarray(
         [
@@ -1286,10 +1285,15 @@ def render_pose_roadmap(
     ]
     axis.legend(handles=legend_items, loc="upper left", fontsize=8, frameon=True)
     if roadmap.geometry_status == "provisional":
+        provisional_note = (
+            "VORLAEUFIG — bekannt fehlerhaftes CAD; konkrete Uebergaenge neu berechnen"
+            if Path(roadmap.source).stem.casefold() == "df1a"
+            else "VORLAEUFIG — CAD, Symmetrie und Posen experimentell validieren"
+        )
         figure.text(
             0.5,
             0.02,
-            "VORLAEUFIG — bekannt fehlerhaftes CAD; konkrete Uebergaenge neu berechnen",
+            provisional_note,
             ha="center",
             color="#b91c1c",
             fontsize=11,

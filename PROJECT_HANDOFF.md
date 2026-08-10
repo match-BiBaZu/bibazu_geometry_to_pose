@@ -113,16 +113,20 @@ neuen Roadmap. Neue Arbeiten sollten unter `src/chute_pose` erfolgen.
 Die neue Pipeline arbeitet in dieser Reihenfolge:
 
 1. Mesh laden, Einheit und geschlossenes Solid prüfen.
-2. Konvexe Stützflächen und alle theoretischen Boden-Wand-Lagen bestimmen.
-3. Über den abgeleiteten Reibwertbereich quasistatische Gleichgewichte prüfen.
-4. Bremskraft- und reine Störmomentreserven berechnen.
-5. Endliche Kippbarrieren durch wiedergesetzte Zwischenorientierungen bestimmen.
-6. STL-Rotationssymmetrie erkennen und bei Bedarf mit STEP verifizieren.
-7. Symmetrieäquivalente Darstellungen zu physischen Poseklassen zusammenführen.
-8. Jede Klasse konservativ bewerten: nur wenn alle Darstellungen bestehen, ist
+2. Vor der Flächenaufzählung kontinuierliche Rotationssymmetrie über
+   Querträgheitsmomente und die azimutunabhängige konvexe Stützfunktion prüfen.
+3. Konvexe Stützflächen und alle theoretischen Boden-Wand-Lagen bestimmen; bei
+   `Cinf` werden komplette Kreisbahnen von STL-Facetten analytisch reduziert.
+4. Über den abgeleiteten Reibwertbereich quasistatische Gleichgewichte prüfen.
+5. Bremskraft- und reine Störmomentreserven berechnen.
+6. Endliche Kippbarrieren durch wiedergesetzte Zwischenorientierungen bestimmen.
+7. Verbleibende diskrete STL-Rotationssymmetrie erkennen und bei Bedarf mit STEP
+   verifizieren.
+8. Symmetrieäquivalente Darstellungen zu physischen Poseklassen zusammenführen.
+9. Jede Klasse konservativ bewerten: nur wenn alle Darstellungen bestehen, ist
    die Klasse `robust`; sonst `metastable`.
-9. Reine Aktuatorrotationen und passive Niedrigbarrierenübergänge erzeugen.
-10. Roadmap exportieren oder eine offene Route mit maximal vier Impulsen planen.
+10. Reine Aktuatorrotationen und passive Niedrigbarrierenübergänge erzeugen.
+11. Roadmap exportieren oder eine offene Route mit maximal vier Impulsen planen.
 
 Aktuell gilt als vorläufig kalibrierte Robustheitsregel:
 
@@ -149,6 +153,16 @@ Roadmap-Datei dauerhaft fest eincodieren.
 
 STEP wird derzeit nur zur Symmetrieverifikation verwendet. Kontaktgeometrie und
 Kippberechnungen verwenden das Mesh.
+
+Kontinuierliche Rotationssymmetrie wird als `Cinf` gespeichert. Die Erkennung
+vergleicht die konvexe Stützfunktion bei festen Neigungs- und wechselnden
+Azimutwinkeln; dadurch wird die endliche Facettenzahl eines STL nicht als
+physische Cn-Symmetrie missverstanden. Reine Drehungen um die Symmetrieachse sind
+keine Posenänderung. Kippbarrieren werden deshalb im Quotientenraum der
+Achsenrichtung und bei `Cinf` bis zum tatsächlichen Energieberg ausgewertet.
+Der bisherige STEP-Boolean-Check unterstützt nur endliche Rotationen; ein
+`Cinf`-Ergebnis bleibt bis zur visuellen/experimentellen Bestätigung
+`provisional`.
 
 ## 7. Aktuatorregeln
 
@@ -324,6 +338,23 @@ YAML vollständig neu erzeugt werden.
 - weitere Konsolidierung gekrümmter Stützregionen ist vor einer allgemeinen
   Serienauswertung sinnvoll.
 
+### Kk1a
+
+- automatische kontinuierliche Rotationssymmetrie `Cinf`, Achse nahezu lokale
+  Z-Achse,
+- maximale azimutale Stützfunktionsabweichung etwa 0.052 mm bei 0.15 mm
+  Prüftoleranz,
+- 102 rohe konvexe Ebenen werden zu 5 axialen Flächenfamilien reduziert,
+- 4 theoretische isolierte Boden-Wand-Lagen; reine Mantel-Mantel-Lagen sind
+  nicht isolierte Rollzustände und werden ausgeschlossen,
+- 2 über den Reibbereich quasistatisch zulässige und robuste Zielposen `0/1`,
+- vollständige Kippbarriere jeweils etwa 1.474 mm,
+- keine metastabile Roadmap-Pose und keine zulässige direkte Aktuatorkante,
+- Hauptfläche ist Face 4 mit 23.898 mm Mindestspanne und liegt unter der
+  25-mm-Grenze; die beiden robusten Posen liegen auf beziehungsweise an der
+  gegenüberliegenden kleineren Endfläche,
+- Export: `Poses_Found_Robust/Kk1a_roadmap_provisional/`.
+
 ## 12. Tests
 
 Vollständiger Testlauf:
@@ -332,7 +363,7 @@ Vollständiger Testlauf:
 uv run --extra dev --extra step pytest -q -p no:cacheprovider
 ```
 
-Aktueller Stand: **31 bestandene Tests**. Die Suite deckt unter anderem ab:
+Aktueller Stand: **34 bestandene Tests**. Die Suite deckt unter anderem ab:
 
 - Koordinatensystem und Gravitation,
 - Geometrie- und Kontaktkatalog,
@@ -340,6 +371,7 @@ Aktueller Stand: **31 bestandene Tests**. Die Suite deckt unter anderem ab:
 - Brems- und Störmomentreserven,
 - endliche Kippbarrieren,
 - STL- und STEP-Symmetrie,
+- kontinuierliche `Cinf`-Erkennung und Kk1a-Facettenreduktion,
 - praktische Poseklassen,
 - Df1a-Knoten- und Kantenregression,
 - Ql1i-25-mm-Regel,
