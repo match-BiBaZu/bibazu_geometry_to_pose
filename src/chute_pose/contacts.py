@@ -76,7 +76,7 @@ class ContactPose:
 
 @dataclass(frozen=True, slots=True)
 class PoseCatalog:
-    """All isolated, theoretical face-edge/face contact orientations."""
+    """All theoretical physical floor-wall contact orientations."""
 
     source: str
     units: str
@@ -88,6 +88,7 @@ class PoseCatalog:
     continuous_symmetry_axis_part: tuple[float, float, float] | None = None
     point_contacts_excluded: bool = True
     edge_edge_contacts_excluded: bool = True
+    continuous_symmetry_edge_edge_exception: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -101,6 +102,9 @@ class PoseCatalog:
             "continuous_symmetry_axis_part": self.continuous_symmetry_axis_part,
             "point_contacts_excluded": self.point_contacts_excluded,
             "edge_edge_contacts_excluded": self.edge_edge_contacts_excluded,
+            "continuous_symmetry_edge_edge_exception": (
+                self.continuous_symmetry_edge_edge_exception
+            ),
         }
 
 
@@ -111,6 +115,8 @@ def _dimension_name(dimension: int) -> str:
 def _rotation_axis(axis: int, angle: float) -> Matrix3:
     c = math.cos(angle)
     s = math.sin(angle)
+    if axis == 0:  # X
+        return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
     if axis == 1:  # Y
         return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
     if axis == 2:  # Z
@@ -369,6 +375,8 @@ def _make_candidate(
     support_faces: tuple[SupportFace, ...],
     contact_tolerance_mm: float,
     provenance: str,
+    *,
+    allow_edge_edge: bool = False,
 ) -> ContactPose | None:
     rotated = (rotation @ vertices_centered.T).T
     min_y = float(np.min(rotated[:, 1]))
@@ -387,7 +395,7 @@ def _make_candidate(
     # remaining rotational degree of freedom and are not isolated poses.
     if floor_dimension < 1 or wall_dimension < 1:
         return None
-    if floor_dimension < 2 and wall_dimension < 2:
+    if floor_dimension < 2 and wall_dimension < 2 and not allow_edge_edge:
         return None
 
     rotated_mesh = (rotation @ mesh_vertices_centered.T).T
@@ -458,6 +466,7 @@ def _add_candidate(
 
 def _continuous_axisymmetric_candidates(
     end_faces: tuple[SupportFace, ...],
+    symmetry_axis_part: Vector3,
     vertices_centered: NDArray[np.float64],
     mesh_vertices_centered: NDArray[np.float64],
     mesh_edges: NDArray[np.int64],
@@ -465,12 +474,13 @@ def _continuous_axisymmetric_candidates(
     support_faces: tuple[SupportFace, ...],
     contact_tolerance_mm: float,
 ) -> list[ContactPose]:
-    """Construct the isolated floor-wall poses of a body of revolution.
+    """Construct physical floor-wall poses of a body of revolution.
 
-    A lateral-lateral contact retains a free rotational degree of freedom and
-    is therefore an excluded edge-edge transition.  An isolated pose exists
-    only when one planar end face contacts one chute plane and the revolved
-    lateral profile supplies a line contact on the other plane.
+    In addition to the isolated end-face poses, discrete lateral-lateral
+    support combinations are physical states.  Their contact looks like
+    edge-edge contact in a faceted mesh, but the remaining spin is only
+    rotation about the body's continuous symmetry axis and therefore does not
+    change pose.
     """
 
     candidates: list[ContactPose] = []
@@ -543,6 +553,91 @@ def _continuous_axisymmetric_candidates(
                     wall_contact_topology="face",
                 )
             )
+
+    # Combine every pair of lateral support orbits.  If their normals have
+    # axial components a_floor and a_wall, an orientation touching both chute
+    # planes must satisfy axis_z=-a_floor and axis_y=-a_wall.  The remaining X
+    # component has two signs, which are the two physically distinct downhill
+    # directions.  This includes an exactly axial cylinder (a=0), but also the
+    # slightly tilted two-rim support that makes a stepped shaft robust.
+    axis = np.asarray(symmetry_axis_part, dtype=float)
+    axis /= np.linalg.norm(axis)
+    axial_merge_tolerance = max(contact_tolerance_mm, 1e-9) / max(
+        float(np.ptp(vertices_centered @ axis)), 1e-9
+    )
+    lateral_orbits: list[tuple[int, float]] = []
+    for face in sorted(support_faces, key=lambda value: value.area_mm2, reverse=True):
+        axial_component = float(np.dot(face.normal_part, axis))
+        if abs(axial_component) >= 1.0 - 1e-6:
+            continue
+        if any(
+            abs(axial_component - known_component) <= axial_merge_tolerance
+            for _, known_component in lateral_orbits
+        ):
+            continue
+        lateral_orbits.append((face.face_id, axial_component))
+
+    for floor_face_id, floor_axial in lateral_orbits:
+        for wall_face_id, wall_axial in lateral_orbits:
+            x_squared = 1.0 - floor_axial**2 - wall_axial**2
+            if x_squared < -1e-10:
+                continue
+            x_magnitude = math.sqrt(max(0.0, x_squared))
+            for direction in (1, -1):
+                axis_chute = np.array(
+                    [direction * x_magnitude, -wall_axial, -floor_axial]
+                )
+                alignment = _rotation_from_to(axis, axis_chute)
+                best_candidate: ContactPose | None = None
+                best_score: tuple[float, int] = (-math.inf, -1)
+                for spin in np.linspace(0.0, 2.0 * math.pi, 360, endpoint=False):
+                    spin_about_axis = Rotation.from_rotvec(
+                        float(spin) * axis_chute
+                    ).as_matrix()
+                    candidate = _make_candidate(
+                        spin_about_axis @ alignment,
+                        vertices_centered,
+                        mesh_vertices_centered,
+                        mesh_edges,
+                        mesh_faces,
+                        support_faces,
+                        contact_tolerance_mm,
+                        provenance=(
+                            "continuous_lateral:"
+                            f"floor_orbit_{floor_face_id}:"
+                            f"wall_orbit_{wall_face_id}:"
+                            f"{'+' if direction > 0 else '-'}axis_downhill"
+                        ),
+                        allow_edge_edge=True,
+                    )
+                    if candidate is None:
+                        continue
+                    floor_points = vertices_centered[
+                        np.asarray(candidate.floor_contact_vertex_indices, dtype=int)
+                    ]
+                    wall_points = vertices_centered[
+                        np.asarray(candidate.wall_contact_vertex_indices, dtype=int)
+                    ]
+                    floor_span = float(np.ptp(floor_points @ axis))
+                    wall_span = float(np.ptp(wall_points @ axis))
+                    score = (
+                        min(floor_span, wall_span),
+                        len(candidate.floor_contact_vertex_indices)
+                        + len(candidate.wall_contact_vertex_indices),
+                    )
+                    if score > best_score:
+                        best_candidate = candidate
+                        best_score = score
+                if best_candidate is not None:
+                    candidates.append(
+                        replace(
+                            best_candidate,
+                            floor_contact_dimension=1,
+                            wall_contact_dimension=1,
+                            floor_contact_topology="edge",
+                            wall_contact_topology="edge",
+                        )
+                    )
     return candidates
 
 
@@ -602,12 +697,13 @@ def build_pose_catalog(
         )
         candidates = _continuous_axisymmetric_candidates(
             end_faces,
+            axis,
             vertices_centered,
             mesh_vertices_centered,
             mesh_edges,
             mesh_faces,
             support_faces,
-            distance_tolerance,
+            max(distance_tolerance, continuous_symmetry.tolerance_mm),
         )
 
     for face in () if continuous_symmetry is not None else support_faces:
@@ -664,17 +760,23 @@ def build_pose_catalog(
     )
     candidates = [replace(candidate, pose_id=index) for index, candidate in enumerate(candidates)]
 
+    effective_contact_tolerance = (
+        distance_tolerance
+        if continuous_symmetry is None
+        else max(distance_tolerance, continuous_symmetry.tolerance_mm)
+    )
     return PoseCatalog(
         source=str(Path(mesh_path).expanduser().resolve()),
         units=units,
         center_mass_part_mm=tuple(float(value) for value in center_mass),
         support_faces=support_faces,
         poses=tuple(candidates),
-        contact_tolerance_mm=distance_tolerance,
+        contact_tolerance_mm=effective_contact_tolerance,
         rotation_tolerance_rad=rotation_tolerance_rad,
         continuous_symmetry_axis_part=(
             None
             if continuous_symmetry is None
             else continuous_symmetry.axis_part
         ),
+        continuous_symmetry_edge_edge_exception=continuous_symmetry is not None,
     )

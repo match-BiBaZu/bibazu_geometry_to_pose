@@ -13,10 +13,15 @@ def test_kk1a_continuous_symmetry_removes_faceted_circle_pose_duplicates() -> No
     catalog = build_pose_catalog(KK1A_STL)
 
     assert catalog.continuous_symmetry_axis_part is not None
+    assert catalog.continuous_symmetry_edge_edge_exception
     assert len(catalog.support_faces) == 5
-    assert len(catalog.poses) == 4
+    assert len(catalog.poses) == 12
     assert sum(pose.floor_contact_type == "face" for pose in catalog.poses) == 2
     assert sum(pose.wall_contact_type == "face" for pose in catalog.poses) == 2
+    assert sum(
+        pose.floor_contact_type == pose.wall_contact_type == "edge"
+        for pose in catalog.poses
+    ) == 8
 
 
 def test_df1a_catalog_contains_all_convex_support_faces() -> None:

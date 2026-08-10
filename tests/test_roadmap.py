@@ -139,13 +139,24 @@ def test_ql1i_main_face_is_too_narrow_for_opposite_x_actions() -> None:
     }.intersection(edge.actuation for edge in roadmap.edges)
 
 
-def test_kk1a_continuous_symmetry_yields_two_robust_but_disconnected_poses() -> None:
+def test_kk1a_continuous_symmetry_keeps_dominant_mantle_poses() -> None:
     roadmap = build_pose_roadmap(KK1A_STL)
 
     assert roadmap.symmetry_symbol == "Cinf"
-    assert [node.node_id for node in roadmap.nodes] == [0, 1]
+    assert [node.node_id for node in roadmap.nodes] == [4, 5, 6, 10]
     assert all(node.kind == "robust" for node in roadmap.nodes)
-    assert all(node.rocking_barrier_mm > 1.4 for node in roadmap.nodes)
+    mantle_nodes = [
+        node
+        for node in roadmap.nodes
+        if node.floor_contact_topology == node.wall_contact_topology == "edge"
+    ]
+    assert len(mantle_nodes) == 2
+    assert all(node.rocking_barrier_mm > 4.8 for node in mantle_nodes)
+    assert all(
+        node.rocking_barrier_mm > 1.4
+        for node in roadmap.nodes
+        if node not in mantle_nodes
+    )
     assert roadmap.main_face_min_span_mm < 25.0
     assert roadmap.edges == ()
 

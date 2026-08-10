@@ -13,9 +13,11 @@
 
 > **Continuous rotational symmetry:** The robust pipeline performs a `Cinf`
 > precheck before enumerating support faces. This prevents circular STL facets
-> from becoming hundreds of artificial poses. Kk1a currently yields two robust
-> physical poses and no directly permitted actuator transition; its export is
-> provisional pending experimental validation.
+> from becoming hundreds of artificial poses. For Kk1a it also retains the two
+> physically distinct, nearly axial mantle-contact poses (thick or thin end
+> downhill). Together with two rarer end-face poses, Kk1a currently yields four
+> robust poses and no directly permitted single-axis actuator transition; its
+> export is provisional pending experimental validation.
 
 
 Determine every *geometrically possible* resting pose of a rigid 3‑D part on a slide such that
