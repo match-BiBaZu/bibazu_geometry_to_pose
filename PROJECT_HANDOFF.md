@@ -347,15 +347,26 @@ YAML vollständig neu erzeugt werden.
 - 102 rohe konvexe Ebenen werden zu 5 axialen Flächenfamilien reduziert,
 - 12 theoretische Boden-Wand-Lagen einschließlich der nur im
   Symmetriequotienten isolierten Mantel-Mantel-Lagen,
-- 4 über den Reibbereich quasistatisch zulässige und robuste Zielposen
-  `4/5/6/10`,
-- die seltenen Endflächenlagen `4/6` besitzen eine vollständige Kippbarriere
-  von jeweils etwa 1.474 mm,
+- 6 Roadmap-Knoten: die Mantel-Mantel-Lagen `5/10` sind robust; die vier
+  Endflächenlagen `4/6/8/11` werden entsprechend der Anlagenbeobachtung als
+  reibungsabhängig/metastabil geführt,
+- die seltenen Endflächenlagen `4/6` auf beziehungsweise an der kleinen
+  Endfläche besitzen eine vollständige Kippbarriere von jeweils etwa 1.474 mm,
+- die Gegenlagen `8/11` mit der Hauptfläche an Wand beziehungsweise Boden
+  besitzen etwa 2.465 mm Kippbarriere, scheitern im quasistatischen Modell
+  jedoch ab einem gesampelten Reibwert von ungefähr 0.057 am
+  Kraft-/Momentengleichgewicht; eine mögliche gyroskopische Stabilisierung ist
+  dynamisch und nicht Teil des Robustheitsscores,
 - die beobachteten, nahezu axialen Mantel-Mantel-Lagen `5/10` (dickes oder
   dünnes Ende voraus) besitzen mit etwa 4.88 mm eine deutlich höhere
   Kippbarriere; die Achse ist wegen der zwei Radien geometrisch um rund 4.6°
   gegen Y und Z geneigt,
-- keine metastabile Roadmap-Pose und keine zulässige direkte Aktuatorkante,
+- direkte symmetrieäquivalente Übergänge `5 <-> 10` sind sowohl um Y als auch
+  um Z mit etwa 170.831 Grad zulässig,
+- von `4/6/8/11` führen vorläufige 90-Grad-Aktuatorkanten über die instabilen,
+  exakt axialen Kataloglagen `1/2` durch passives Einrasten nach `5/10`; die
+  Zwischenpose steht als `settling_pose_ids` in JSON beziehungsweise
+  `passive_settling_via_catalog_pose_ids` in YAML,
 - Hauptfläche ist Face 4 mit 23.898 mm Mindestspanne und liegt unter der
   25-mm-Grenze; die beiden robusten Posen liegen auf beziehungsweise an der
   gegenüberliegenden kleineren Endfläche; die Hauptflächenannahme bleibt

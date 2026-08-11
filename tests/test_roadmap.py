@@ -143,8 +143,14 @@ def test_kk1a_continuous_symmetry_keeps_dominant_mantle_poses() -> None:
     roadmap = build_pose_roadmap(KK1A_STL)
 
     assert roadmap.symmetry_symbol == "Cinf"
-    assert [node.node_id for node in roadmap.nodes] == [4, 5, 6, 10]
-    assert all(node.kind == "robust" for node in roadmap.nodes)
+    assert [node.node_id for node in roadmap.nodes] == [4, 5, 6, 8, 10, 11]
+    assert [node.node_id for node in roadmap.nodes if node.kind == "robust"] == [
+        5,
+        10,
+    ]
+    assert [
+        node.node_id for node in roadmap.nodes if node.kind == "metastable"
+    ] == [4, 6, 8, 11]
     mantle_nodes = [
         node
         for node in roadmap.nodes
@@ -158,7 +164,32 @@ def test_kk1a_continuous_symmetry_keeps_dominant_mantle_poses() -> None:
         if node not in mantle_nodes
     )
     assert roadmap.main_face_min_span_mm < 25.0
-    assert roadmap.edges == ()
+
+    direct_robust_edges = {
+        (edge.source, edge.target, edge.actuation, round(edge.signed_angle_deg, 3))
+        for edge in roadmap.edges
+        if edge.source in {5, 10}
+        and edge.target in {5, 10}
+        and not edge.settling_pose_ids
+    }
+    assert direct_robust_edges == {
+        (5, 10, "free_y", 170.831),
+        (5, 10, "free_z", -170.831),
+        (10, 5, "free_y", -170.831),
+        (10, 5, "free_z", 170.831),
+    }
+
+    relaxed_sources = {
+        edge.source
+        for edge in roadmap.edges
+        if edge.target in {5, 10} and edge.settling_pose_ids
+    }
+    assert relaxed_sources == {4, 6, 8, 11}
+    assert all(
+        edge.settling_pose_ids in {(1,), (2,)}
+        for edge in roadmap.edges
+        if edge.settling_pose_ids
+    )
 
 
 def test_geometric_score_rewards_wide_deep_capture_basin() -> None:

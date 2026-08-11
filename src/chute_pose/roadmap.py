@@ -98,6 +98,7 @@ class RoadmapEdge:
     escape_barrier_mm: float | None = None
     saddle_angle_deg: float | None = None
     axis_error_deg: float = 0.0
+    settling_pose_ids: tuple[int, ...] = ()
 
     @property
     def actuation_count(self) -> int:
@@ -137,6 +138,9 @@ class RoadmapEdge:
                 else None
             ),
             axis_error_deg=float(value.get("axis_error_deg", 0.0)),
+            settling_pose_ids=tuple(
+                int(item) for item in value.get("settling_pose_ids", ())
+            ),
         )
 
 
@@ -360,6 +364,7 @@ def _best_actuated_relation(
     action: str,
     main_face_ids: tuple[int, ...],
     axis_tolerance_deg: float,
+    continuous_axis_part: np.ndarray | None = None,
 ) -> tuple[float, float, int, int] | None:
     axis, domain = _ACTION_SPECS[action]
     face_ids = set(main_face_ids)
@@ -379,16 +384,57 @@ def _best_actuated_relation(
             target_rotation = np.asarray(
                 poses[target_pose_id].rotation_chute_from_part, dtype=float
             )
-            rotvec = Rotation.from_matrix(target_rotation @ source_rotation.T).as_rotvec()
-            angle_rad = float(np.linalg.norm(rotvec))
-            if angle_rad <= 1e-9:
-                continue
-            unit = rotvec / angle_rad
-            alignment = float(np.dot(unit, axis))
-            axis_error = math.degrees(math.acos(float(np.clip(abs(alignment), -1.0, 1.0))))
+            if continuous_axis_part is None:
+                rotvec = Rotation.from_matrix(
+                    target_rotation @ source_rotation.T
+                ).as_rotvec()
+                angle_rad = float(np.linalg.norm(rotvec))
+                if angle_rad <= 1e-9:
+                    continue
+                unit = rotvec / angle_rad
+                alignment = float(np.dot(unit, axis))
+                axis_error = math.degrees(
+                    math.acos(float(np.clip(abs(alignment), -1.0, 1.0)))
+                )
+                signed_angle = math.degrees(angle_rad) * (
+                    1.0 if alignment >= 0.0 else -1.0
+                )
+            else:
+                source_axis = source_rotation @ continuous_axis_part
+                target_axis = target_rotation @ continuous_axis_part
+                source_perpendicular = source_axis - np.dot(source_axis, axis) * axis
+                target_perpendicular = target_axis - np.dot(target_axis, axis) * axis
+                source_norm = float(np.linalg.norm(source_perpendicular))
+                target_norm = float(np.linalg.norm(target_perpendicular))
+                if source_norm <= 1e-10 or target_norm <= 1e-10:
+                    signed_angle = 0.0
+                else:
+                    source_perpendicular /= source_norm
+                    target_perpendicular /= target_norm
+                    signed_angle = math.degrees(
+                        math.atan2(
+                            float(
+                                np.dot(
+                                    axis,
+                                    np.cross(source_perpendicular, target_perpendicular),
+                                )
+                            ),
+                            float(np.dot(source_perpendicular, target_perpendicular)),
+                        )
+                    )
+                rotated_axis = (
+                    Rotation.from_rotvec(math.radians(signed_angle) * axis).as_matrix()
+                    @ source_axis
+                )
+                axis_error = math.degrees(
+                    math.acos(
+                        float(np.clip(np.dot(rotated_axis, target_axis), -1.0, 1.0))
+                    )
+                )
+                if abs(signed_angle) <= 1e-9 and axis_error <= axis_tolerance_deg:
+                    continue
             if axis_error > axis_tolerance_deg:
                 continue
-            signed_angle = math.degrees(angle_rad) * (1.0 if alignment >= 0.0 else -1.0)
             if abs(abs(signed_angle) - 180.0) <= 1e-7:
                 if action in {"floor_main_neg_x", "wall_main_neg_x"}:
                     signed_angle = -180.0
@@ -416,6 +462,7 @@ def _actuated_edges(
     gravity: np.ndarray,
     robust_barrier_threshold_mm: float,
     axis_tolerance_deg: float,
+    continuous_axis_part: np.ndarray | None = None,
 ) -> list[RoadmapEdge]:
     edges: list[RoadmapEdge] = []
     class_node_ids = {
@@ -450,6 +497,7 @@ def _actuated_edges(
                     action,
                     main_face_ids,
                     axis_tolerance_deg,
+                    continuous_axis_part,
                 )
                 if relation is None:
                     continue
@@ -531,6 +579,163 @@ def _geodesic_escape(
         float(sample_angles[peak_index]),
         tuple(float(value) for value in axis),
     )
+
+
+def _actuated_relaxation_edges(
+    classes: tuple[PracticalPoseClass, ...],
+    nodes_by_id: dict[int, RoadmapNode],
+    poses: dict[int, ContactPose],
+    main_face_ids: tuple[int, ...],
+    main_face_min_span_mm: float,
+    opposite_x_min_height_mm: float,
+    vertices_centered: np.ndarray,
+    gravity: np.ndarray,
+    robust_barrier_threshold_mm: float,
+    axis_tolerance_deg: float,
+    continuous_axis_part: np.ndarray | None,
+    edge_index_start: int,
+) -> list[RoadmapEdge]:
+    """Connect an actuation to a downhill passive settling target.
+
+    Rejected catalog poses remain transition metadata rather than roadmap
+    nodes.  This first implementation is enabled for Cinf parts, where pose
+    equivalence and the single physical orientation axis are unambiguous.
+    """
+
+    if continuous_axis_part is None:
+        return []
+    node_pose_ids = {
+        pose_id for pose_class in classes for pose_id in pose_class.pose_ids
+    }
+    transition_pose_ids = tuple(sorted(set(poses).difference(node_pose_ids)))
+    if not transition_pose_ids:
+        return []
+
+    settling_targets: dict[
+        int, list[tuple[int, float, float, tuple[float, float, float]]]
+    ] = {}
+    for transition_pose_id in transition_pose_ids:
+        source_rotation = np.asarray(
+            poses[transition_pose_id].rotation_chute_from_part, dtype=float
+        )
+        candidates: list[tuple[int, float, float, tuple[float, float, float]]] = []
+        for target_class in classes:
+            target_id = target_class.representative_pose_id
+            best: tuple[float, float, float, tuple[float, float, float]] | None = None
+            for target_pose_id in target_class.pose_ids:
+                target_rotation = np.asarray(
+                    poses[target_pose_id].rotation_chute_from_part, dtype=float
+                )
+                escape = _geodesic_escape(
+                    source_rotation,
+                    target_rotation,
+                    vertices_centered,
+                    gravity,
+                )
+                if escape is None:
+                    continue
+                if best is None or (escape[0], escape[1]) < (best[0], best[1]):
+                    best = escape
+            if (
+                best is not None
+                and best[0] <= robust_barrier_threshold_mm
+                and best[1] < -1e-4
+            ):
+                candidates.append((target_id, best[0], best[2], best[3]))
+        if candidates:
+            minimum_barrier = min(value[1] for value in candidates)
+            settling_targets[transition_pose_id] = [
+                value for value in candidates if value[1] <= minimum_barrier + 0.02
+            ]
+
+    edges: list[RoadmapEdge] = []
+    face_ids = set(main_face_ids)
+    for source_class in classes:
+        source_id = source_class.representative_pose_id
+        source_node = nodes_by_id[source_id]
+        for transition_pose_id, targets in settling_targets.items():
+            transition_pose = poses[transition_pose_id]
+            transition_class = PracticalPoseClass(
+                class_id=-1,
+                representative_pose_id=transition_pose_id,
+                pose_ids=(transition_pose_id,),
+                floor_contact_type=transition_pose.floor_contact_type,
+                wall_contact_type=transition_pose.wall_contact_type,
+            )
+            for action, (axis, domain) in _ACTION_SPECS.items():
+                if action.startswith("floor_main_") and not source_node.main_face_on_floor:
+                    continue
+                if action.startswith("wall_main_") and not source_node.main_face_on_wall:
+                    continue
+                if (
+                    action in {"floor_main_pos_x", "wall_main_neg_x"}
+                    and main_face_min_span_mm <= opposite_x_min_height_mm
+                ):
+                    continue
+                relation = _best_actuated_relation(
+                    source_class,
+                    transition_class,
+                    poses,
+                    action,
+                    tuple(face_ids),
+                    axis_tolerance_deg,
+                    continuous_axis_part,
+                )
+                if relation is None:
+                    continue
+                axis_error, signed_angle, _, _ = relation
+                half_width = max(0.1, axis_tolerance_deg)
+                interval = (
+                    max(domain[0], signed_angle - half_width),
+                    min(domain[1], signed_angle + half_width),
+                )
+                capture_width = max(0.0, interval[1] - interval[0])
+                for target_id, escape_barrier, saddle_angle, _ in targets:
+                    if target_id == source_id:
+                        continue
+                    target_node = nodes_by_id[target_id]
+                    capture, barrier_score, base_score = geometric_reliability_score(
+                        capture_width,
+                        domain[1] - domain[0],
+                        target_node.rocking_barrier_mm,
+                        robust_barrier_threshold_mm,
+                    )
+                    settling_score = float(
+                        np.clip(
+                            1.0 - escape_barrier / robust_barrier_threshold_mm,
+                            0.0,
+                            1.0,
+                        )
+                    )
+                    edge_index = edge_index_start + len(edges)
+                    edges.append(
+                        RoadmapEdge(
+                            edge_id=(
+                                f"r{edge_index}:{source_id}->{target_id}:"
+                                f"{action}:via{transition_pose_id}"
+                            ),
+                            source=source_id,
+                            target=target_id,
+                            transition_kind="actuated",
+                            actuation=action,  # type: ignore[arg-type]
+                            axis_chute=tuple(float(value) for value in axis),
+                            signed_angle_deg=float(signed_angle),
+                            capture_interval_deg=tuple(
+                                float(value) for value in interval
+                            ),
+                            capture_width_deg=capture_width,
+                            capture_fraction=capture,
+                            target_barrier_score=barrier_score,
+                            geometric_score=max(
+                                base_score * settling_score, 1e-12
+                            ),
+                            escape_barrier_mm=float(escape_barrier),
+                            saddle_angle_deg=float(saddle_angle),
+                            axis_error_deg=float(axis_error),
+                            settling_pose_ids=(transition_pose_id,),
+                        )
+                    )
+    return edges
 
 
 def _passive_edges(
@@ -650,9 +855,15 @@ def build_pose_roadmap(
         catalog=catalog,
     )
     nominal_ids = nominal.stable_pose_ids
+    conditional_ids = nominal.friction_dependent_pose_ids
+    roadmap_pose_ids = (
+        tuple(sorted(set(nominal_ids + conditional_ids)))
+        if catalog.continuous_symmetry_axis_part is not None
+        else nominal_ids
+    )
     disturbance = analyze_disturbance_robustness(
         mesh_path,
-        pose_ids=nominal_ids,
+        pose_ids=roadmap_pose_ids,
         alpha_deg=alpha_deg,
         beta_deg=beta_deg,
         onset_alpha_deg=onset_alpha_deg,
@@ -661,7 +872,7 @@ def build_pose_roadmap(
     )
     rocking = analyze_rocking_barriers(
         mesh_path,
-        pose_ids=nominal_ids,
+        pose_ids=roadmap_pose_ids,
         alpha_deg=alpha_deg,
         beta_deg=beta_deg,
         catalog=catalog,
@@ -673,7 +884,19 @@ def build_pose_roadmap(
         minimum_barrier_height_mm=robust_barrier_threshold_mm,
         minimum_face_face_braking_g=minimum_face_face_braking_g,
     )
-    robust_pose_ids = set(robust_filter.accepted_pose_ids)
+    robust_pose_ids = set(robust_filter.accepted_pose_ids).intersection(nominal_ids)
+    poses = {pose.pose_id: pose for pose in catalog.poses}
+    if catalog.continuous_symmetry_axis_part is not None:
+        # End-face/mantle states of an axially asymmetric Cinf body can be
+        # statically admissible yet tip at the first braking impulse.  Keep
+        # them as metastable roadmap states; only lateral-lateral support is
+        # treated as dynamically robust without experimental calibration.
+        robust_pose_ids = {
+            pose_id
+            for pose_id in robust_pose_ids
+            if poses[pose_id].floor_contact_dimension == 1
+            and poses[pose_id].wall_contact_dimension == 1
+        }
     mesh = load_solid_mesh(mesh_path)
     vertices_centered_full = np.asarray(mesh.vertices, dtype=float) - np.asarray(
         mesh.center_mass, dtype=float
@@ -687,7 +910,7 @@ def build_pose_roadmap(
     clustering = cluster_practical_contact_poses(
         catalog,
         vertices_centered_full,
-        nominal_ids,
+        roadmap_pose_ids,
         symmetry=symmetry,
         angular_tolerance_deg=angular_tolerance_deg,
         surface_displacement_tolerance_mm=max(
@@ -707,7 +930,6 @@ def build_pose_roadmap(
         )
         for face in main_faces
     )
-    poses = {pose.pose_id: pose for pose in catalog.poses}
     barriers = {value.pose_id: value for value in rocking.barriers}
     nodes: list[RoadmapNode] = []
     for pose_class in clustering.classes:
@@ -748,7 +970,48 @@ def build_pose_roadmap(
         gravity,
         robust_barrier_threshold_mm,
         angular_tolerance_deg,
+        (
+            None
+            if catalog.continuous_symmetry_axis_part is None
+            else np.asarray(catalog.continuous_symmetry_axis_part, dtype=float)
+        ),
     )
+    relaxed = _actuated_relaxation_edges(
+        clustering.classes,
+        nodes_by_id,
+        poses,
+        main_face_ids,
+        main_face_min_span_mm,
+        opposite_x_min_height_mm,
+        hull_vertices_centered,
+        gravity,
+        robust_barrier_threshold_mm,
+        angular_tolerance_deg,
+        (
+            None
+            if catalog.continuous_symmetry_axis_part is None
+            else np.asarray(catalog.continuous_symmetry_axis_part, dtype=float)
+        ),
+        len(actuated),
+    )
+    direct_keys = {(edge.source, edge.target, edge.actuation) for edge in actuated}
+    best_relaxed: dict[tuple[int, int, ActuationKind], RoadmapEdge] = {}
+    for edge in relaxed:
+        key = (edge.source, edge.target, edge.actuation)
+        if key in direct_keys:
+            continue
+        known = best_relaxed.get(key)
+        if known is None or (
+            edge.geometric_score,
+            -(edge.escape_barrier_mm or 0.0),
+            -abs(edge.signed_angle_deg),
+        ) > (
+            known.geometric_score,
+            -(known.escape_barrier_mm or 0.0),
+            -abs(known.signed_angle_deg),
+        ):
+            best_relaxed[key] = edge
+    relaxed = list(best_relaxed.values())
     passive, unresolved = _passive_edges(
         clustering.classes,
         nodes_by_id,
@@ -773,7 +1036,7 @@ def build_pose_roadmap(
         robust_barrier_threshold_mm=robust_barrier_threshold_mm,
         axis_tolerance_deg=angular_tolerance_deg,
         nodes=tuple(nodes),
-        edges=tuple(actuated + passive),
+        edges=tuple(actuated + relaxed + passive),
         unresolved_metastable_node_ids=unresolved,
     )
 
@@ -1030,6 +1293,9 @@ def roadmap_handover_dict(roadmap: PoseRoadmap) -> dict[str, Any]:
                     "axis_error_deg": edge.axis_error_deg,
                     "passive_escape_barrier_mm": edge.escape_barrier_mm,
                     "passive_saddle_angle_deg": edge.saddle_angle_deg,
+                    "passive_settling_via_catalog_pose_ids": (
+                        edge.settling_pose_ids
+                    ),
                 },
                 "experimental": {
                     "status": "untested",
@@ -1082,6 +1348,13 @@ bekannten **gerichteten** direkten Übergänge. Eine Kante von `from_pose` nach
 - `capture.interval_deg` und `capture.width_deg` beschreiben den geometrisch
   berechneten Einfangbereich. `geometry.geometric_score` ist **keine
   Erfolgswahrscheinlichkeit**.
+- `geometry.passive_settling_via_catalog_pose_ids` nennt nicht als Knoten
+  dargestellte instabile Kataloglagen, über die das Bauteil nach dem Impuls
+  passiv in `to_pose` fällt. Ein leerer Wert kennzeichnet einen direkten
+  Übergang.
+- `classification.unresolved_metastable_pose_ids` bedeutet nur, dass aus der
+  jeweiligen Pose **ohne Aktuierung** kein eindeutiges passives Kippen gefunden
+  wurde. Aktuierte ausgehende Kanten können trotzdem vorhanden sein.
 - Bei `surface_requirement` und `additional_requirement` müssen die genannten
   Aktuatorbedingungen erfüllt sein.
 
@@ -1219,9 +1492,15 @@ def render_pose_roadmap(
         if edge.transition_kind == "passive_tip":
             label = f"passiv Δh={edge.escape_barrier_mm:.3f}mm"
         else:
+            settling = (
+                " via " + "/".join(str(value) for value in edge.settling_pose_ids)
+                if edge.settling_pose_ids
+                else ""
+            )
             label = (
                 f"{action_labels[edge.actuation]} {edge.signed_angle_deg:+.1f}° "
                 f"w={edge.capture_width_deg:.1f}° s={edge.geometric_score:.3f}"
+                f"{settling}"
             )
         edge_labels.setdefault((edge.source, edge.target), []).append(label)
     nx.draw_networkx_edge_labels(
