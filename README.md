@@ -1,5 +1,25 @@
 # Geometric Resting‑Pose Finder
 
+> **Projektübergabe:** Der aktuelle Entwicklungsstand, die Roadmap-/YAML-Schnittstelle,
+> bekannte CAD-Grenzen und die nächsten Arbeiten sind in
+> [`PROJECT_HANDOFF.md`](PROJECT_HANDOFF.md) zusammengefasst.
+
+> **New robust pipeline:** The stepwise replacement for the legacy pose
+> calculation starts in [`ROBUST_PIPELINE.md`](ROBUST_PIPELINE.md). Step 1
+> fixes the chute coordinate convention, validates solid input geometry and
+> verifies Df1a at `alpha = 45 deg`, `beta = 20 deg`. The legacy scripts
+> documented below remain unchanged while the new implementation is built and
+> tested incrementally.
+
+> **Continuous rotational symmetry:** The robust pipeline performs a `Cinf`
+> precheck before enumerating support faces. This prevents circular STL facets
+> from becoming hundreds of artificial poses. For Kk1a it also retains the two
+> physically distinct, nearly axial mantle-contact poses (thick or thin end
+> downhill). Kk1a currently yields two robust mantle-contact poses and four
+> friction-dependent metastable end-face poses. Symmetry-aware Y/Z transitions
+> and actuation followed by passive settling through unstable catalog poses are
+> included; the export remains provisional pending experimental validation.
+
 
 Determine every *geometrically possible* resting pose of a rigid 3‑D part on a slide such that
 
