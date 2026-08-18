@@ -17,6 +17,10 @@ from .frame import ChuteFrame
 from .geometry import load_solid_mesh
 
 
+STABILITY_ALGORITHM_LABEL = "quasi-static force/moment equilibrium"
+STABILITY_VALUE_LABEL = "minimum pressure margin across sampled friction range"
+
+
 @dataclass(frozen=True, slots=True)
 class FrictionEstimate:
     """Equal floor/wall friction inferred from the observed slide onset."""

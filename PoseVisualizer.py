@@ -7,6 +7,8 @@ from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d import proj3d
 import os
 
+from chute_pose.plot_view import apply_pose_view
+
 
 class PoseVisualizer:
     def __init__(self, original_obj_file: str = None, convex_hull_obj_file: str = None,
@@ -113,6 +115,7 @@ class PoseVisualizer:
         ax.set_xlim(mid_x - max_range, mid_x + max_range)
         ax.set_ylim(mid_y - max_range, mid_y + max_range)
         ax.set_zlim(mid_z - max_range, mid_z + max_range)
+        apply_pose_view(ax)
 
         # bigger tick labels
         ax.tick_params(axis='x', which='both', labelsize=self.fs["tick"])

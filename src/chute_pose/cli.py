@@ -28,7 +28,7 @@ from .rocking import (
     analyze_rocking_barriers,
     filter_finite_disturbance_robustness,
 )
-from .stability import analyze_pose_stability
+from .stability import STABILITY_ALGORITHM_LABEL, analyze_pose_stability
 from .step_verification import StepSupportUnavailable, verify_step_symmetry
 from .symmetry import detect_rotational_symmetry, reduce_catalog_by_symmetry
 from .visualization import render_pose_sheets
@@ -312,13 +312,22 @@ def _stability(args: argparse.Namespace) -> int:
         for value in reduced.classes
         if stable_ids.intersection(value.pose_ids)
     )
-    stable_pose_labels = {
-        min(stable_ids.intersection(value.pose_ids)): (
-            "Klasse " + "/".join(str(pose_id) for pose_id in value.pose_ids)
+    stability_by_pose_id = {value.pose_id: value for value in analysis.poses}
+    stable_pose_labels = {}
+    for value in reduced.classes:
+        stable_class_ids = stable_ids.intersection(value.pose_ids)
+        if not stable_class_ids:
+            continue
+        representative = min(stable_class_ids)
+        minimum_margin = min(
+            stability_by_pose_id[pose_id].minimum_pressure_margin
+            for pose_id in stable_class_ids
         )
-        for value in reduced.classes
-        if stable_ids.intersection(value.pose_ids)
-    }
+        stable_pose_labels[representative] = (
+            "Klasse "
+            + "/".join(str(pose_id) for pose_id in value.pose_ids)
+            + f"\nmin. Druckreserve: {minimum_margin:.4f}"
+        )
     if args.render_output_dir is not None:
         part_name = args.mesh.stem
         render_pose_sheets(
@@ -328,7 +337,9 @@ def _stability(args: argparse.Namespace) -> int:
             sheet_title=(
                 f"{part_name}: quasistatisch zulaessige Gleitlagen "
                 f"bei alpha={args.alpha:g} deg, "
-                f"beta={args.beta:g} deg"
+                f"beta={args.beta:g} deg\n"
+                f"Algorithmus: {STABILITY_ALGORITHM_LABEL}; "
+                "Wert = minimale Druckreserve ueber den abgetasteten Reibbereich"
             ),
             filename_prefix=f"{part_name}_quasistatic",
             pose_labels=stable_pose_labels,

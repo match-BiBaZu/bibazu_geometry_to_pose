@@ -260,6 +260,14 @@ uv run chute-pose render "Werkstücke_STL_grob/Df1a.STL" `
   --output-dir "Poses_Found_Robust/Df1a_theoretical"
 ```
 
+Alle vom Pose-Generator und von der Roadmap erzeugten 3D-Ansichten verwenden
+dieselbe orthografische GUI-Kamera: Z zeigt nach oben, Y nach rechts unten und X
+nach rechts oben zwischen Y und Z.
+
+Die optionalen Stabilitaetsbilder nennen den ausgewaehlten quasistatischen
+Kraft-/Momenten-Algorithmus. Unter jeder Pose steht als Zahlenwert die kleinste
+Druckreserve ueber den abgetasteten Reibwertbereich.
+
 Roadmap erzeugen:
 
 ```powershell

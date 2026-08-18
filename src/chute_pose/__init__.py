@@ -6,6 +6,8 @@ from .contacts import ContactPose, PoseCatalog, SupportFace, build_pose_catalog
 from .stability import (
     FrictionEstimate,
     PoseStability,
+    STABILITY_ALGORITHM_LABEL,
+    STABILITY_VALUE_LABEL,
     StabilityAnalysis,
     StabilitySample,
     analyze_pose_stability,
@@ -71,6 +73,8 @@ __all__ = [
     "build_pose_catalog",
     "FrictionEstimate",
     "PoseStability",
+    "STABILITY_ALGORITHM_LABEL",
+    "STABILITY_VALUE_LABEL",
     "StabilityAnalysis",
     "StabilitySample",
     "analyze_pose_stability",

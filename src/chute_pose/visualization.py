@@ -16,6 +16,7 @@ import numpy as np
 
 from .contacts import ContactPose, PoseCatalog, build_pose_catalog
 from .geometry import load_solid_mesh
+from .plot_view import apply_pose_view
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,7 +196,7 @@ def _draw_pose(
     ax.set_ylim(-0.05 * margin, bounds[1, 1] + margin)
     ax.set_zlim(-0.05 * margin, bounds[1, 2] + margin)
     ax.set_box_aspect(np.maximum(span, 0.35 * np.max(span)))
-    ax.view_init(elev=24.0, azim=-58.0)
+    apply_pose_view(ax)
     ax.set_axis_off()
     if show_title:
         ax.set_title(
