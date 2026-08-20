@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from mpl_toolkits.mplot3d import proj3d
 
-from chute_pose.plot_view import apply_pose_view
+from chute_pose.plot_view import apply_pose_view, draw_coordinate_axes
 from chute_pose.visualization import render_pose_sheets
 
 
@@ -31,9 +31,25 @@ def test_pose_view_matches_gui_axis_directions() -> None:
         projected_axes.append(direction / np.linalg.norm(direction))
     plt.close(figure)
 
-    np.testing.assert_allclose(projected_axes[0], (np.sqrt(3.0) / 2.0, 0.5), atol=1e-6)
+    np.testing.assert_allclose(projected_axes[0], (-np.sqrt(3.0) / 2.0, -0.5), atol=1e-6)
     np.testing.assert_allclose(projected_axes[1], (np.sqrt(3.0) / 2.0, -0.5), atol=1e-6)
     np.testing.assert_allclose(projected_axes[2], (0.0, 1.0), atol=1e-6)
+
+
+def test_coordinate_axes_draw_xyz_labels() -> None:
+    figure = plt.figure()
+    axis = figure.add_subplot(111, projection="3d")
+
+    draw_coordinate_axes(axis)
+
+    labels = [text.get_text() for text in axis.texts if text.get_text()]
+    assert set(labels) == {"X", "Y", "Z"}
+    assert len(labels) == 3
+    x_label = next(text for text in axis.texts if text.get_text() == "X")
+    x_position = x_label.get_position()
+    assert x_position[0] < 0.80
+    assert x_position[1] < 0.80
+    plt.close(figure)
 
 
 def test_render_selected_df1a_poses(tmp_path: Path) -> None:

@@ -140,8 +140,19 @@ def cluster_practical_contact_poses(
     grouped_by_contact: dict[tuple[int, int], list[int]] = {}
     for pose_id in requested:
         pose = poses_by_id[pose_id]
+        # Fine facets near the floor-wall bisector can describe the same
+        # occupied orientation with the contact dimensions exchanged between
+        # the two planes.  Keep the dimensional signature, but make it
+        # independent of which plane received which member.  The subsequent
+        # angular and whole-surface displacement checks still have to pass for
+        # every pair, so genuinely different orientations remain separate.
         grouped_by_contact.setdefault(
-            (pose.floor_contact_dimension, pose.wall_contact_dimension), []
+            tuple(
+                sorted(
+                    (pose.floor_contact_dimension, pose.wall_contact_dimension)
+                )
+            ),
+            [],
         ).append(pose_id)
 
     raw_classes: list[tuple[int, ...]] = []

@@ -8,19 +8,19 @@ PARTS = REPOSITORY_ROOT / "Werkstücke_STL_grob"
 
 def test_df1a_practical_threefold_symmetry_and_known_pose_classes() -> None:
     catalog, reduced = build_symmetry_reduced_catalog(
-        PARTS / "Df1a.STL", tolerance_mm=0.5
+        PARTS / "Df1a.STL", tolerance_mm=0.05
     )
 
-    assert len(catalog.poses) == 108
+    assert len(catalog.poses) == 90
     assert reduced.symmetry.symbol == "C3"
     assert reduced.symmetry.order == 3
     assert max(
         element.mapping_error_mm for element in reduced.symmetry.elements
-    ) < 0.32
-    assert reduced.class_for_pose(9).pose_ids == (9, 12, 32)
-    assert reduced.class_for_pose(24).pose_ids == (24, 26, 28)
-    assert reduced.class_for_pose(60).pose_ids == (60, 61, 86)
-    assert reduced.class_for_pose(35).pose_ids == (35, 105, 106)
+    ) < 1e-4
+    assert reduced.class_for_pose(9).pose_ids == (9, 12, 31)
+    assert reduced.class_for_pose(23).pose_ids == (23, 25, 27)
+    assert reduced.class_for_pose(34).pose_ids == (34, 87, 88)
+    assert reduced.class_for_pose(50).pose_ids == (50, 51, 74)
 
 
 def test_ql1i_fourfold_symmetry_is_detected_automatically() -> None:

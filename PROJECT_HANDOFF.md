@@ -101,12 +101,14 @@ beiden reproduzierbar abgebildet werden.
 | `src/chute_pose/visualization.py` | technische 3D-Posenbilder mit Boden/Wand/Kontakten |
 | `src/chute_pose/cli.py` | Befehle `inspect` bis `route` |
 | `tests/` | deterministische Unit- und Geometrieregressionen |
-| `ROBUST_PIPELINE.md` | Entwicklungsgeschichte und fachliche Detailerklärung |
-| `Werkstücke_STL_grob/` | STL/OBJ/STEP der Bauteile |
+| `README.md` | aktuelle Bedienung, Algorithmen und fachliche Detailerklärung |
+| `Werkstücke_STL_grob/` | aktive STL- und STEP-Modelle der Bauteile |
+| `legacy/` | historische OBJ/CSV-Pipeline, Konverter und alte Poseplots |
 
-Die historischen Dateien `Main.py`, `PoseFinder.py`, `PoseEliminator.py` und
-verwandte Skripte bleiben als Referenz erhalten, sind aber nicht die Grundlage der
-neuen Roadmap. Neue Arbeiten sollten unter `src/chute_pose` erfolgen.
+Die historischen Dateien `legacy/Main.py`, `legacy/PoseFinder.py`,
+`legacy/PoseEliminator.py` und verwandte Skripte bleiben als Referenz erhalten,
+sind aber nicht die Grundlage der neuen Roadmap. Neue Arbeiten sollten unter
+`src/chute_pose` erfolgen.
 
 ## 5. Berechnungspipeline
 
@@ -143,13 +145,15 @@ Beobachtungen für Df1a, Dl1a und Qk1a gewählt.
 Eine physische Roadmap-Pose kann mehrere Katalog-IDs enthalten. Beispiel Df1a:
 
 ```text
-Roadmap-ID 9  -> Katalogdarstellungen 9/12/32
+Roadmap-ID 0 -> Katalogdarstellungen 23/25/27
 ```
 
-Die Roadmap-ID ist immer die Repräsentanten-ID der Klasse. Übergänge referenzieren
-diese Roadmap-ID. Bei Austausch oder Neuvernetzung eines CAD-Modells dürfen sich
-alle Pose-IDs ändern. Externe Systeme dürfen daher IDs nicht ohne zugehörige
-Roadmap-Datei dauerhaft fest eincodieren.
+Roadmap-IDs werden nach der Klassifikation kompakt ab 0 in absteigender
+Reihenfolge der minimalen Kippbarriere jeder physischen Klasse vergeben.
+Übergänge referenzieren diese Roadmap-ID. Die ursprüngliche Repräsentanten-ID
+steht in `original_catalog_pose_id`, alle Symmetriedarstellungen in `pose_ids`
+beziehungsweise `equivalent_catalog_pose_ids`. Grafiken zeigen nur die neue
+kompakte Pose-Nummer; die alten IDs bleiben maschinenlesbare Metadaten.
 
 STEP wird derzeit nur zur Symmetrieverifikation verwendet. Kontaktgeometrie und
 Kippberechnungen verwenden das Mesh.
@@ -261,19 +265,23 @@ uv run chute-pose render "Werkstücke_STL_grob/Df1a.STL" `
 ```
 
 Alle vom Pose-Generator und von der Roadmap erzeugten 3D-Ansichten verwenden
-dieselbe orthografische GUI-Kamera: Z zeigt nach oben, Y nach rechts unten und X
-nach rechts oben zwischen Y und Z.
+dasselbe orthografische isometrische Kamera-Overlay: Z zeigt nach oben, Y nach
+rechts unten und der rote positive X-Pfeil nach links unten. Das Overlay zeigt
+damit direkt die physikalische Rechenkonvention `+X = bergab`.
 
-Die optionalen Stabilitaetsbilder nennen den ausgewaehlten quasistatischen
-Kraft-/Momenten-Algorithmus. Unter jeder Pose steht als Zahlenwert die kleinste
-Druckreserve ueber den abgetasteten Reibwertbereich.
+The optional stability sheets name the selected quasi-static force/moment
+algorithm. Each pose shows its minimum dimensionless contact load balance index
+over the sampled friction range on a 0--1 scale. This index is not an observed
+probability or likelihood; a likelihood would require calibration against
+repeated physical pose-frequency measurements.
 
 Roadmap erzeugen:
 
 ```powershell
 uv run chute-pose roadmap "Werkstücke_STL_grob/Df1a.STL" `
-  --output-dir "Poses_Found_Robust/Df1a_roadmap_provisional" `
-  --geometry-status provisional
+  --output-dir "Poses_Found_Robust/Df1a_roadmap_verified" `
+  --expected-symmetry C3 `
+  --geometry-status verified
 
 uv run chute-pose roadmap "Werkstücke_STL_grob/Ql1i.STL" `
   --output-dir "Poses_Found_Robust/Ql1i_roadmap" `
@@ -284,8 +292,8 @@ Route mit höchstens vier Aktuatorimpulsen suchen:
 
 ```powershell
 uv run chute-pose route `
-  "Poses_Found_Robust/Df1a_roadmap_provisional/Df1a_roadmap.json" `
-  --start-pose 9 --target-pose 60 --max-actions 4
+  "Poses_Found_Robust/Df1a_roadmap_verified/Df1a_roadmap.json" `
+  --start-pose 1 --target-pose 3 --max-actions 4
 ```
 
 Es gibt keine Zwischenzustandserkennung und keine Neuplanung zwischen Impulsen.
@@ -295,34 +303,32 @@ Das Ergebnis ist eine feste offene Aktionsfolge.
 
 ### Df1a
 
-**Wichtig:** Das aktuelle Df1a-CAD ist fachlich als fehlerhaft bestätigt. Alle
-konkreten IDs und Übergänge sind `provisional`.
+Das reparierte Df1a-Modell besitzt eine mit STEP exakt bestätigte
+C3-Rotationssymmetrie. Der aktuelle verifizierte Modellstand ist:
 
-Aktueller Ersatzmodellstand:
+- 90 theoretische Kontaktlagen,
+- 24 quasistatisch zulässige Darstellungen,
+- C3-Zusammenführung zu 8 Roadmap-Knoten,
+- 4 robuste Klassen: `0` (Katalog `23/25/27`), `1` (`9/12/31`),
+  `2` (`34/87/88`), `3` (`50/51/74`),
+- 4 metastabile Klassen: `4` (`45/66/81`), `5` (`38/75/85`),
+  `6` (`37/76/86`), `7` (`46/67/82`),
+- 14 Aktuatorkanten und 4 passive Kippkanten,
+- Hauptfläche 4, Mindestbreite etwa 69.282 mm,
+- Export: `Poses_Found_Robust/Df1a_roadmap_verified/`.
 
-- 108 theoretische Kontaktlagen,
-- 27 quasistatisch zulässige Darstellungen,
-- C3-Zusammenführung zu 11 Roadmap-Knoten,
-- 4 robuste Klassen: `9`, `24`, `35`, `60`,
-- 7 metastabile Klassen,
-- 16 Aktuatorkanten und 7 passive Kippkanten,
-- Hauptfläche 5, Mindestbreite etwa 69.282 mm,
-- zusätzliche Gegenrichtungen:
-  - `9 -> 35`: `wall_main_neg_x`, -90 Grad,
-  - `24 -> 60`: `floor_main_pos_x`, +90 Grad.
-
-Nach Austausch des CAD müssen Katalog, Symmetrie, Roadmap, Referenzbilder und
-YAML vollständig neu erzeugt werden.
+Die konkreten Pose-IDs und Übergänge gelten für genau diesen CAD-/STL-Stand
+und müssen nach weiteren Geometrieänderungen neu erzeugt werden.
 
 ### Ql1i
 
 - exakte C4-Symmetrie,
 - 6 physische Roadmap-Knoten,
-- 2 robuste Zielklassen: `2` und `3`,
-- 4 metastabile Zwischenklassen: `0`, `6`, `10`, `13`,
+- 2 robuste Zielklassen mit ursprünglichen Katalog-IDs `2` und `3`,
+- 4 metastabile Zwischenklassen mit ursprünglichen IDs `0`, `6`, `10`, `13`,
 - 32 Aktuatorkanten,
 - keine aufgelöste passive Kippkante,
-- passive Ziele für `0`, `6`, `10`, `13` derzeit ungelöst,
+- passive Ziele für die metastabilen Klassen derzeit ungelöst,
 - vier gleich große Hauptflächen `0/1/4/5`,
 - intrinsische Mindestbreite 20 mm; deshalb keine `floor_main_pos_x`- oder
   `wall_main_neg_x`-Kanten bei 25-mm-Grenze.
@@ -331,7 +337,8 @@ YAML vollständig neu erzeugt werden.
 
 - exakte C3-Symmetrie,
 - 42 quasistatisch zulässige Darstellungen, 14 physische Klassen,
-- beobachtete robuste Klassen `15`, `16`, `31`, `34`,
+- beobachtete robuste Katalogklassen `15/63/154`, `16/64/153`,
+  `31/109/168`, `34/87/169`,
 - robuste Barrieren etwa 0.248 mm,
 - spiegelbildliche Längsklassen nur etwa 0.011 mm,
 - freie Y-/Z-Einfangbereiche der Stirnflächenlagen bleiben schlechter als die
@@ -355,9 +362,9 @@ YAML vollständig neu erzeugt werden.
 - 102 rohe konvexe Ebenen werden zu 5 axialen Flächenfamilien reduziert,
 - 12 theoretische Boden-Wand-Lagen einschließlich der nur im
   Symmetriequotienten isolierten Mantel-Mantel-Lagen,
-- 6 Roadmap-Knoten: die Mantel-Mantel-Lagen `5/10` sind robust; die vier
-  Endflächenlagen `4/6/8/11` werden entsprechend der Anlagenbeobachtung als
-  reibungsabhängig/metastabil geführt,
+- 6 Roadmap-Knoten: die ursprünglichen Kataloglagen `5/10` sind robuste
+  Mantel-Mantel-Lagen; `4/6/8/11` werden entsprechend der Anlagenbeobachtung
+  als reibungsabhängig/metastabil geführt,
 - die seltenen Endflächenlagen `4/6` auf beziehungsweise an der kleinen
   Endfläche besitzen eine vollständige Kippbarriere von jeweils etwa 1.474 mm,
 - die Gegenlagen `8/11` mit der Hauptfläche an Wand beziehungsweise Boden
@@ -369,10 +376,11 @@ YAML vollständig neu erzeugt werden.
   dünnes Ende voraus) besitzen mit etwa 4.88 mm eine deutlich höhere
   Kippbarriere; die Achse ist wegen der zwei Radien geometrisch um rund 4.6°
   gegen Y und Z geneigt,
-- direkte symmetrieäquivalente Übergänge `5 <-> 10` sind sowohl um Y als auch
+- direkte symmetrieäquivalente Übergänge der beiden robusten Lagen sind sowohl um Y als auch
   um Z mit etwa 170.831 Grad zulässig,
-- von `4/6/8/11` führen vorläufige 90-Grad-Aktuatorkanten über die instabilen,
-  exakt axialen Kataloglagen `1/2` durch passives Einrasten nach `5/10`; die
+- von den vier metastabilen Lagen führen vorläufige 90-Grad-Aktuatorkanten über die
+  instabilen, exakt axialen Kataloglagen `1/2` durch passives Einrasten nach
+  beiden robusten Lagen; die
   Zwischenpose steht als `settling_pose_ids` in JSON beziehungsweise
   `passive_settling_via_catalog_pose_ids` in YAML,
 - Hauptfläche ist Face 4 mit 23.898 mm Mindestspanne und liegt unter der
@@ -389,7 +397,7 @@ Vollständiger Testlauf:
 uv run --extra dev --extra step pytest -q -p no:cacheprovider
 ```
 
-Aktueller Stand: **34 bestandene Tests**. Die Suite deckt unter anderem ab:
+Aktueller Stand: **37 bestandene Tests**. Die Suite deckt unter anderem ab:
 
 - Koordinatensystem und Gravitation,
 - Geometrie- und Kontaktkatalog,
@@ -412,8 +420,6 @@ keine generierten Testbilder im Repository landen.
 
 ## 13. Bekannte Grenzen
 
-- Df1a verwendet ein falsches CAD; Ergebnisse sind nur infrastrukturelle
-  Referenzen.
 - Das Modell ist quasistatisch. Falltests, Stöße, elastische Verformung,
   Luftströmung und zeitabhängige Reibung fehlen.
 - Passive Kippkanten verwenden diskretisierte gesetzte Energiepfade und können
@@ -434,7 +440,7 @@ keine generierten Testbilder im Repository landen.
 
 ## 14. Nächste sinnvolle Arbeiten
 
-1. Korrektes Df1a-CAD einspielen und alle Df1a-Artefakte neu erzeugen.
+1. Die verifizierte Df1a-Roadmap experimentell gegen reale Posewechsel prüfen.
 2. YAML-Kanten experimentell vermessen und `trials`, `successes` sowie
    `empirical_success_rate` befüllen.
 3. Einheitliche Versuchsbedingungen dokumentieren: Druck, Pulsdauer,
@@ -484,16 +490,16 @@ Vor Übergabe an Kollegen:
 
 ```text
 Paket:              src/chute_pose
-Detaildokument:     ROBUST_PIPELINE.md
+Hauptdokumentation: README.md
 CLI:                uv run chute-pose --help
 Roadmap:            uv run chute-pose roadmap <mesh> --output-dir <dir>
 Route:              uv run chute-pose route <roadmap.json> --start-pose N --target-pose M
 Test:               uv run --extra dev --extra step pytest -q -p no:cacheprovider
-Teststand:          31 bestanden
+Teststand:          37 bestanden
 Rutsche:            alpha=45 deg, beta=20 deg
 Robustheit:         Kippbarriere >= 0.20 mm; face-face zusätzlich >= 0.10 g
 Gegen-X-Schwelle:   intrinsische Hauptflächenbreite > 25 mm
-Df1a:               provisional, 4 robust + 7 metastabil
+Df1a:               STEP-verifiziert, 4 robust + 4 metastabil
 Ql1i:               2 robust + 4 metastabil
 YAML:               experimentell editierbare gerichtete Roadmap
 ```

@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass, replace
+from itertools import product
 from pathlib import Path
 from typing import Any
 
@@ -317,15 +318,24 @@ def _contact_topology(
             stack.extend(neighbors)
         components.append(component)
 
+    component_by_vertex = {
+        vertex: component_index
+        for component_index, component in enumerate(components)
+        for vertex in component
+    }
+    components_with_faces: set[int] = set()
+    for face in mesh_faces:
+        face_vertices = tuple(int(vertex) for vertex in face)
+        if all(vertex in contact_set for vertex in face_vertices):
+            components_with_faces.add(component_by_vertex[face_vertices[0]])
+    components_with_edges = {
+        component_by_vertex[first] for first, _ in contact_edges
+    }
+
     pieces: list[str] = []
-    for component in components:
-        contains_face = any(
-            all(int(vertex) in component for vertex in face) for face in mesh_faces
-        )
-        contains_edge = any(
-            first in component and second in component
-            for first, second in contact_edges
-        )
+    for component_index, component in enumerate(components):
+        contains_face = component_index in components_with_faces
+        contains_edge = component_index in components_with_edges
         if contains_face:
             pieces.append("face")
         elif contains_edge:
@@ -377,6 +387,7 @@ def _make_candidate(
     provenance: str,
     *,
     allow_edge_edge: bool = False,
+    include_contact_details: bool = True,
 ) -> ContactPose | None:
     rotated = (rotation @ vertices_centered.T).T
     min_y = float(np.min(rotated[:, 1]))
@@ -398,21 +409,33 @@ def _make_candidate(
     if floor_dimension < 2 and wall_dimension < 2 and not allow_edge_edge:
         return None
 
-    rotated_mesh = (rotation @ mesh_vertices_centered.T).T
-    mesh_floor_indices = np.flatnonzero(
-        rotated_mesh[:, 2]
-        <= float(np.min(rotated_mesh[:, 2])) + contact_tolerance_mm
-    )
-    mesh_wall_indices = np.flatnonzero(
-        rotated_mesh[:, 1]
-        <= float(np.min(rotated_mesh[:, 1])) + contact_tolerance_mm
-    )
-    floor_topology, floor_mesh_edges = _contact_topology(
-        mesh_floor_indices, mesh_edges, mesh_faces
-    )
-    wall_topology, wall_mesh_edges = _contact_topology(
-        mesh_wall_indices, mesh_edges, mesh_faces
-    )
+    if include_contact_details:
+        rotated_mesh = (rotation @ mesh_vertices_centered.T).T
+        mesh_floor_indices = np.flatnonzero(
+            rotated_mesh[:, 2]
+            <= float(np.min(rotated_mesh[:, 2])) + contact_tolerance_mm
+        )
+        mesh_wall_indices = np.flatnonzero(
+            rotated_mesh[:, 1]
+            <= float(np.min(rotated_mesh[:, 1])) + contact_tolerance_mm
+        )
+        floor_topology, floor_mesh_edges = _contact_topology(
+            mesh_floor_indices, mesh_edges, mesh_faces
+        )
+        wall_topology, wall_mesh_edges = _contact_topology(
+            mesh_wall_indices, mesh_edges, mesh_faces
+        )
+        floor_face_ids = _face_ids_in_contact(floor_indices, support_faces)
+        wall_face_ids = _face_ids_in_contact(wall_indices, support_faces)
+    else:
+        mesh_floor_indices = np.empty(0, dtype=np.int64)
+        mesh_wall_indices = np.empty(0, dtype=np.int64)
+        floor_mesh_edges = ()
+        wall_mesh_edges = ()
+        floor_topology = _dimension_name(floor_dimension)
+        wall_topology = _dimension_name(wall_dimension)
+        floor_face_ids = ()
+        wall_face_ids = ()
 
     matrix_tuple = tuple(
         tuple(float(value) for value in row) for row in np.asarray(rotation)
@@ -436,9 +459,93 @@ def _make_candidate(
         wall_mesh_contact_edges=wall_mesh_edges,
         floor_contact_topology=floor_topology,
         wall_contact_topology=wall_topology,
-        floor_face_ids=_face_ids_in_contact(floor_indices, support_faces),
-        wall_face_ids=_face_ids_in_contact(wall_indices, support_faces),
+        floor_face_ids=floor_face_ids,
+        wall_face_ids=wall_face_ids,
         provenance=(provenance,),
+    )
+
+
+def _with_contact_details(
+    candidate: ContactPose,
+    mesh_vertices_centered: NDArray[np.float64],
+    mesh_edges: NDArray[np.int64],
+    mesh_faces: NDArray[np.int64],
+    support_faces: tuple[SupportFace, ...],
+    contact_tolerance_mm: float,
+    *,
+    force_dimension_topology: bool = False,
+    topology_cache: ContactTopologyCache | None = None,
+    face_contact_cache: FaceContactCache | None = None,
+) -> ContactPose:
+    """Populate full-mesh contact metadata after rotation deduplication."""
+
+    rotation = np.asarray(candidate.rotation_chute_from_part, dtype=float)
+    rotated_mesh = (rotation @ mesh_vertices_centered.T).T
+    mesh_floor_indices = np.flatnonzero(
+        rotated_mesh[:, 2]
+        <= float(np.min(rotated_mesh[:, 2])) + contact_tolerance_mm
+    )
+    mesh_wall_indices = np.flatnonzero(
+        rotated_mesh[:, 1]
+        <= float(np.min(rotated_mesh[:, 1])) + contact_tolerance_mm
+    )
+    floor_mesh_key = tuple(int(index) for index in mesh_floor_indices)
+    wall_mesh_key = tuple(int(index) for index in mesh_wall_indices)
+    floor_details = (
+        topology_cache.get(floor_mesh_key) if topology_cache is not None else None
+    )
+    if floor_details is None:
+        floor_details = _contact_topology(
+            mesh_floor_indices, mesh_edges, mesh_faces
+        )
+        if topology_cache is not None:
+            topology_cache[floor_mesh_key] = floor_details
+    wall_details = (
+        topology_cache.get(wall_mesh_key) if topology_cache is not None else None
+    )
+    if wall_details is None:
+        wall_details = _contact_topology(mesh_wall_indices, mesh_edges, mesh_faces)
+        if topology_cache is not None:
+            topology_cache[wall_mesh_key] = wall_details
+    floor_topology, floor_mesh_edges = floor_details
+    wall_topology, wall_mesh_edges = wall_details
+    if force_dimension_topology:
+        floor_topology = _dimension_name(candidate.floor_contact_dimension)
+        wall_topology = _dimension_name(candidate.wall_contact_dimension)
+    floor_hull_key = candidate.floor_contact_vertex_indices
+    wall_hull_key = candidate.wall_contact_vertex_indices
+    floor_face_ids = (
+        face_contact_cache.get(floor_hull_key)
+        if face_contact_cache is not None
+        else None
+    )
+    if floor_face_ids is None:
+        floor_face_ids = _face_ids_in_contact(
+            np.asarray(floor_hull_key, dtype=np.int64), support_faces
+        )
+        if face_contact_cache is not None:
+            face_contact_cache[floor_hull_key] = floor_face_ids
+    wall_face_ids = (
+        face_contact_cache.get(wall_hull_key)
+        if face_contact_cache is not None
+        else None
+    )
+    if wall_face_ids is None:
+        wall_face_ids = _face_ids_in_contact(
+            np.asarray(wall_hull_key, dtype=np.int64), support_faces
+        )
+        if face_contact_cache is not None:
+            face_contact_cache[wall_hull_key] = wall_face_ids
+    return replace(
+        candidate,
+        floor_mesh_contact_vertex_indices=floor_mesh_key,
+        wall_mesh_contact_vertex_indices=wall_mesh_key,
+        floor_mesh_contact_edges=floor_mesh_edges,
+        wall_mesh_contact_edges=wall_mesh_edges,
+        floor_contact_topology=floor_topology,
+        wall_contact_topology=wall_topology,
+        floor_face_ids=floor_face_ids,
+        wall_face_ids=wall_face_ids,
     )
 
 
@@ -447,21 +554,76 @@ def _rotation_distance(a: ContactPose, b: ContactPose) -> float:
     return 2.0 * math.acos(float(np.clip(dot, -1.0, 1.0)))
 
 
+QuaternionBucket = tuple[int, int, int, int]
+CandidateBuckets = dict[QuaternionBucket, list[int]]
+_QUATERNION_NEIGHBOR_OFFSETS = tuple(product((-1, 0, 1), repeat=4))
+ContactTopology = tuple[str, tuple[tuple[int, int], ...]]
+ContactTopologyCache = dict[tuple[int, ...], ContactTopology]
+FaceContactCache = dict[tuple[int, ...], tuple[int, ...]]
+
+
+def _quaternion_bucket(
+    quaternion: NDArray[np.float64], bucket_width: float
+) -> QuaternionBucket:
+    return tuple(  # type: ignore[return-value]
+        int(value) for value in np.floor(quaternion / bucket_width)
+    )
+
+
+def _nearby_candidate_indices(
+    quaternion: NDArray[np.float64],
+    bucket_width: float,
+    buckets: CandidateBuckets,
+) -> tuple[int, ...]:
+    """Return possible quaternion matches, including the antipodal form."""
+
+    result: set[int] = set()
+    for variant in (quaternion, -quaternion):
+        center = _quaternion_bucket(variant, bucket_width)
+        for offset in _QUATERNION_NEIGHBOR_OFFSETS:
+            key = tuple(
+                center[axis] + int(offset[axis]) for axis in range(4)
+            )
+            result.update(buckets.get(key, ()))  # type: ignore[arg-type]
+    return tuple(sorted(result))
+
+
 def _add_candidate(
-    candidates: list[ContactPose], candidate: ContactPose | None, tolerance_rad: float
+    candidates: list[ContactPose],
+    candidate: ContactPose | None,
+    tolerance_rad: float,
+    buckets: CandidateBuckets | None = None,
 ) -> None:
     if candidate is None:
         return
-    for index, known in enumerate(candidates):
+    bucket_width = max(
+        2.0 * math.sin(max(tolerance_rad, np.finfo(float).eps) / 4.0),
+        np.finfo(float).eps,
+    )
+    quaternion = np.asarray(candidate.quaternion_xyzw, dtype=float)
+    known_indices = (
+        range(len(candidates))
+        if buckets is None
+        else _nearby_candidate_indices(quaternion, bucket_width, buckets)
+    )
+    for index in known_indices:
+        known = candidates[index]
         if _rotation_distance(candidate, known) <= tolerance_rad:
             candidates[index] = replace(
                 known,
                 provenance=tuple(sorted(set(known.provenance + candidate.provenance))),
-                floor_face_ids=tuple(sorted(set(known.floor_face_ids + candidate.floor_face_ids))),
-                wall_face_ids=tuple(sorted(set(known.wall_face_ids + candidate.wall_face_ids))),
+                floor_face_ids=tuple(
+                    sorted(set(known.floor_face_ids + candidate.floor_face_ids))
+                ),
+                wall_face_ids=tuple(
+                    sorted(set(known.wall_face_ids + candidate.wall_face_ids))
+                ),
             )
             return
     candidates.append(candidate)
+    if buckets is not None:
+        key = _quaternion_bucket(quaternion, bucket_width)
+        buckets.setdefault(key, []).append(len(candidates) - 1)
 
 
 def _continuous_axisymmetric_candidates(
@@ -504,6 +666,7 @@ def _continuous_axisymmetric_candidates(
                     support_faces,
                     contact_tolerance_mm,
                     provenance=f"continuous_floor_end_face:{face.face_id}",
+                    include_contact_details=False,
                 )
                 if floor_candidate is not None:
                     break
@@ -538,6 +701,7 @@ def _continuous_axisymmetric_candidates(
                     support_faces,
                     contact_tolerance_mm,
                     provenance=f"continuous_wall_end_face:{face.face_id}",
+                    include_contact_details=False,
                 )
                 if wall_candidate is not None:
                     break
@@ -609,6 +773,7 @@ def _continuous_axisymmetric_candidates(
                             f"{'+' if direction > 0 else '-'}axis_downhill"
                         ),
                         allow_edge_edge=True,
+                        include_contact_details=False,
                     )
                     if candidate is None:
                         continue
@@ -684,6 +849,7 @@ def build_pose_catalog(
             ),
         )
     candidates: list[ContactPose] = []
+    candidate_buckets: CandidateBuckets = {}
 
     if continuous_symmetry is not None:
         axis = np.asarray(continuous_symmetry.axis_part, dtype=float)
@@ -729,8 +895,14 @@ def build_pose_catalog(
                     support_faces,
                     distance_tolerance,
                     provenance=f"floor_face:{face.face_id}",
+                    include_contact_details=False,
                 )
-                _add_candidate(candidates, candidate, rotation_tolerance_rad)
+                _add_candidate(
+                    candidates,
+                    candidate,
+                    rotation_tolerance_rad,
+                    candidate_buckets,
+                )
 
         # Mirror case: anchor the face on the wall, then rotate around wall
         # normal Y until a projected silhouette edge supports the floor.
@@ -752,13 +924,42 @@ def build_pose_catalog(
                     support_faces,
                     distance_tolerance,
                     provenance=f"wall_face:{face.face_id}",
+                    include_contact_details=False,
                 )
-                _add_candidate(candidates, candidate, rotation_tolerance_rad)
+                _add_candidate(
+                    candidates,
+                    candidate,
+                    rotation_tolerance_rad,
+                    candidate_buckets,
+                )
 
     candidates.sort(
         key=lambda pose: tuple(round(value, 12) for value in pose.quaternion_xyzw)
     )
-    candidates = [replace(candidate, pose_id=index) for index, candidate in enumerate(candidates)]
+    topology_cache: ContactTopologyCache = {}
+    face_contact_cache: FaceContactCache = {}
+    candidates = [
+        _with_contact_details(
+            candidate,
+            mesh_vertices_centered,
+            mesh_edges,
+            mesh_faces,
+            support_faces,
+            (
+                distance_tolerance
+                if continuous_symmetry is None
+                else max(distance_tolerance, continuous_symmetry.tolerance_mm)
+            ),
+            force_dimension_topology=continuous_symmetry is not None,
+            topology_cache=topology_cache,
+            face_contact_cache=face_contact_cache,
+        )
+        for candidate in candidates
+    ]
+    candidates = [
+        replace(candidate, pose_id=index)
+        for index, candidate in enumerate(candidates)
+    ]
 
     effective_contact_tolerance = (
         distance_tolerance

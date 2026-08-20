@@ -279,24 +279,57 @@ def reduce_catalog_by_symmetry(
         if first_root != second_root:
             parents[second_root] = first_root
 
-    for first in range(len(pose_rotations)):
-        for second in range(first + 1, len(pose_rotations)):
-            if symmetry.continuous_axis_part is not None:
-                axis = np.asarray(symmetry.continuous_axis_part, dtype=float)
-                first_axis = pose_rotations[first] @ axis
-                second_axis = pose_rotations[second] @ axis
+    if symmetry.continuous_axis_part is not None:
+        axis = np.asarray(symmetry.continuous_axis_part, dtype=float)
+        oriented_axes = np.asarray(
+            [rotation @ axis for rotation in pose_rotations], dtype=float
+        )
+        axis_tree = cKDTree(oriented_axes)
+        chord_tolerance = 2.0 * math.sin(tolerance / 2.0) + 1e-12
+        for first, first_axis in enumerate(oriented_axes):
+            for second in axis_tree.query_ball_point(
+                first_axis, chord_tolerance
+            ):
+                if second <= first:
+                    continue
                 separation = math.acos(
-                    float(np.clip(np.dot(first_axis, second_axis), -1.0, 1.0))
+                    float(
+                        np.clip(
+                            np.dot(first_axis, oriented_axes[second]),
+                            -1.0,
+                            1.0,
+                        )
+                    )
                 )
-                equivalent = separation <= tolerance
-            else:
-                relative = pose_rotations[first].T @ pose_rotations[second]
-                equivalent = any(
-                    _rotation_distance(relative, symmetry_rotation) <= tolerance
-                    for symmetry_rotation in symmetry_rotations
-                )
-            if equivalent:
-                union(first, second)
+                if separation <= tolerance:
+                    union(first, second)
+    else:
+        pose_quaternions = Rotation.from_matrix(
+            np.asarray(pose_rotations)
+        ).as_quat()
+        quaternion_tree = cKDTree(
+            np.vstack((pose_quaternions, -pose_quaternions))
+        )
+        tree_pose_ids = np.tile(
+            np.arange(len(pose_rotations), dtype=int), 2
+        )
+        chord_tolerance = 2.0 * math.sin(tolerance / 4.0) + 1e-12
+        for first, first_rotation in enumerate(pose_rotations):
+            for symmetry_rotation in symmetry_rotations:
+                target = first_rotation @ symmetry_rotation
+                target_quaternion = Rotation.from_matrix(target).as_quat()
+                for tree_index in quaternion_tree.query_ball_point(
+                    target_quaternion, chord_tolerance
+                ):
+                    second = int(tree_pose_ids[tree_index])
+                    if second <= first:
+                        continue
+                    relative = first_rotation.T @ pose_rotations[second]
+                    if (
+                        _rotation_distance(relative, symmetry_rotation)
+                        <= tolerance
+                    ):
+                        union(first, second)
 
     grouped: dict[int, list[int]] = {}
     for pose in catalog.poses:

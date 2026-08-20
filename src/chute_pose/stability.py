@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import math
+from collections.abc import Iterable
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -16,9 +17,11 @@ from .contacts import ContactPose, PoseCatalog, build_pose_catalog
 from .frame import ChuteFrame
 from .geometry import load_solid_mesh
 
-
 STABILITY_ALGORITHM_LABEL = "quasi-static force/moment equilibrium"
-STABILITY_VALUE_LABEL = "minimum pressure margin across sampled friction range"
+STABILITY_VALUE_LABEL = (
+    "minimum contact load balance index across sampled friction range"
+)
+FrictionPolicy = Literal["range", "zero"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,9 +63,18 @@ class PoseStability:
     stable_at_any_sample: bool
     minimum_pressure_margin: float
 
+    @property
+    def minimum_contact_load_balance_index(self) -> float:
+        """Return the dimensionless normalized contact-load margin on 0..1."""
+
+        return min(1.0, max(0.0, self.minimum_pressure_margin))
+
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
         result["samples"] = [sample.to_dict() for sample in self.samples]
+        result["minimum_contact_load_balance_index"] = (
+            self.minimum_contact_load_balance_index
+        )
         return result
 
 
@@ -77,6 +89,9 @@ class StabilityAnalysis:
     friction_estimate: FrictionEstimate
     mu_values: tuple[float, ...]
     poses: tuple[PoseStability, ...]
+    input_pose_count: int | None = None
+    quasistatic_only: bool = False
+    friction_policy: FrictionPolicy = "zero"
 
     @property
     def stable_pose_ids(self) -> tuple[int, ...]:
@@ -97,6 +112,13 @@ class StabilityAnalysis:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        diagnostics_omitted = self.quasistatic_only or self.friction_policy == "zero"
+        friction_dependent_pose_ids: tuple[int, ...] | None = (
+            None if diagnostics_omitted else self.friction_dependent_pose_ids
+        )
+        rejected_pose_ids: tuple[int, ...] | None = (
+            None if diagnostics_omitted else self.rejected_pose_ids
+        )
         return {
             "source": self.source,
             "alpha_deg": self.alpha_deg,
@@ -104,9 +126,24 @@ class StabilityAnalysis:
             "gravity_chute_m_s2": self.gravity_chute_m_s2,
             "friction_estimate": self.friction_estimate.to_dict(),
             "mu_values": self.mu_values,
+            "friction_policy": self.friction_policy,
+            "evaluation_mode": (
+                "zero_friction_nominal"
+                if self.friction_policy == "zero"
+                else (
+                    "quasistatic_accepted_only"
+                    if self.quasistatic_only
+                    else "exhaustive_friction_diagnostics"
+                )
+            ),
+            "input_pose_count": (
+                len(self.poses)
+                if self.input_pose_count is None
+                else self.input_pose_count
+            ),
             "stable_pose_ids": self.stable_pose_ids,
-            "friction_dependent_pose_ids": self.friction_dependent_pose_ids,
-            "rejected_pose_ids": self.rejected_pose_ids,
+            "friction_dependent_pose_ids": friction_dependent_pose_ids,
+            "rejected_pose_ids": rejected_pose_ids,
             "poses": [pose.to_dict() for pose in self.poses],
         }
 
@@ -277,11 +314,27 @@ def analyze_pose_stability(
     mu_samples: int = 11,
     margin_tolerance: float = 1e-6,
     catalog: PoseCatalog | None = None,
+    quasistatic_only: bool = False,
+    friction_policy: FrictionPolicy = "zero",
 ) -> StabilityAnalysis:
-    """Filter poses at sampled coefficients spanning ``0 <= mu <= mu_s``."""
+    """Filter poses using nominal ``mu = 0`` or an optional friction range.
 
-    if mu_samples < 2:
-        raise ValueError("mu_samples must be at least 2.")
+    When ``quasistatic_only`` is true, the returned pose records contain only
+    poses that are stable at every sampled coefficient.  The zero-friction
+    sample is evaluated first and failures are discarded immediately because
+    such a pose cannot pass the complete range.  This preserves the accepted
+    quasistatic set exactly while intentionally omitting the much more
+    expensive friction-dependent and rejected-pose diagnostics.
+
+    The default ``friction_policy="zero"`` evaluates one nominal
+    zero-friction sample and does not classify friction-dependent behaviour.
+    Select ``"range"`` explicitly for the inferred static-friction sweep.
+    """
+
+    if friction_policy not in {"range", "zero"}:
+        raise ValueError("friction_policy must be 'range' or 'zero'.")
+    if friction_policy == "range" and mu_samples < 2:
+        raise ValueError("mu_samples must be at least 2 for range policy.")
     if not math.isfinite(margin_tolerance) or margin_tolerance < 0.0:
         raise ValueError("margin_tolerance must be a finite non-negative number.")
 
@@ -290,7 +343,11 @@ def analyze_pose_stability(
     estimate = estimate_equal_contact_friction(
         onset_alpha_deg=onset_alpha_deg, onset_beta_deg=onset_beta_deg
     )
-    mu_values = np.linspace(0.0, estimate.mu_static_estimate, mu_samples)
+    mu_values = (
+        np.array([0.0], dtype=float)
+        if friction_policy == "zero"
+        else np.linspace(0.0, estimate.mu_static_estimate, mu_samples)
+    )
     pose_catalog = catalog or build_pose_catalog(mesh_path)
 
     mesh = load_solid_mesh(mesh_path)
@@ -301,18 +358,48 @@ def analyze_pose_stability(
 
     results: list[PoseStability] = []
     for pose in pose_catalog.poses:
-        samples = tuple(
-            _solve_pose_sample(
+        if quasistatic_only:
+            first_sample = _solve_pose_sample(
                 pose,
                 vertices_centered,
                 gravity,
-                float(mu),
+                float(mu_values[0]),
                 pose_catalog.contact_tolerance_mm,
                 length_scale,
                 margin_tolerance,
             )
-            for mu in mu_values
-        )
+            if not first_sample.stable:
+                continue
+            accepted_samples = [first_sample]
+            for mu in mu_values[1:]:
+                sample = _solve_pose_sample(
+                    pose,
+                    vertices_centered,
+                    gravity,
+                    float(mu),
+                    pose_catalog.contact_tolerance_mm,
+                    length_scale,
+                    margin_tolerance,
+                )
+                if not sample.stable:
+                    break
+                accepted_samples.append(sample)
+            if len(accepted_samples) != len(mu_values):
+                continue
+            samples = tuple(accepted_samples)
+        else:
+            samples = tuple(
+                _solve_pose_sample(
+                    pose,
+                    vertices_centered,
+                    gravity,
+                    float(mu),
+                    pose_catalog.contact_tolerance_mm,
+                    length_scale,
+                    margin_tolerance,
+                )
+                for mu in mu_values
+            )
         results.append(
             PoseStability(
                 pose_id=pose.pose_id,
@@ -333,4 +420,7 @@ def analyze_pose_stability(
         friction_estimate=estimate,
         mu_values=tuple(float(value) for value in mu_values),
         poses=tuple(results),
+        input_pose_count=len(pose_catalog.poses),
+        quasistatic_only=quasistatic_only,
+        friction_policy=friction_policy,
     )

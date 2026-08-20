@@ -6,7 +6,7 @@ import base64
 import heapq
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal
@@ -19,9 +19,17 @@ import networkx as nx
 import numpy as np
 from matplotlib.lines import Line2D
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
+from matplotlib.text import Annotation
 from scipy.spatial.transform import Rotation
 
 from .contacts import ContactPose, build_pose_catalog
+from .csa import (
+    DEFAULT_CSA_CAP_HALF_ANGLE_DEG,
+    DEFAULT_CSA_DIRECTION_SAMPLES,
+    DEFAULT_CSA_ROBUST_THRESHOLD,
+    analyze_contact_wrench_solid_angle,
+    filter_contact_wrench_solid_angle,
+)
 from .disturbance import analyze_disturbance_robustness
 from .equivalence import PracticalPoseClass, cluster_practical_contact_poses
 from .frame import ChuteFrame
@@ -30,11 +38,13 @@ from .rocking import (
     analyze_rocking_barriers,
     filter_finite_disturbance_robustness,
 )
-from .stability import analyze_pose_stability
+from .stability import FrictionPolicy, analyze_pose_stability
 from .symmetry import detect_rotational_symmetry
 from .visualization import create_pose_thumbnails
 
 NodeKind = Literal["robust", "metastable"]
+PoseRankingMethod = Literal["rocking", "csa"]
+RobustnessMethod = Literal["rocking", "csa"]
 TransitionKind = Literal["actuated", "passive_tip"]
 ActuationKind = Literal[
     "floor_main_neg_x",
@@ -45,6 +55,8 @@ ActuationKind = Literal[
     "free_z",
     "passive",
 ]
+
+DEFAULT_ROADMAP_SYMMETRY_TOLERANCE_MM = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,9 +71,22 @@ class RoadmapNode:
     rocking_barrier_mm: float
     main_face_on_floor: bool
     main_face_on_wall: bool
+    csa_stability_index: float | None = None
+    csa_feasible_fraction: float | None = None
+    csa_feasible_solid_angle_sr: float | None = None
+    csa_angular_clearance_deg: float | None = None
+    csa_applicable: bool | None = None
+
+    @property
+    def original_catalog_pose_id(self) -> int:
+        """Return the original representative ID before roadmap relabelling."""
+
+        return self.pose_ids[0]
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        result = asdict(self)
+        result["original_catalog_pose_id"] = self.original_catalog_pose_id
+        return result
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> RoadmapNode:
@@ -78,6 +103,31 @@ class RoadmapNode:
             rocking_barrier_mm=float(value["rocking_barrier_mm"]),
             main_face_on_floor=bool(value["main_face_on_floor"]),
             main_face_on_wall=bool(value["main_face_on_wall"]),
+            csa_stability_index=(
+                float(value["csa_stability_index"])
+                if value.get("csa_stability_index") is not None
+                else None
+            ),
+            csa_feasible_fraction=(
+                float(value["csa_feasible_fraction"])
+                if value.get("csa_feasible_fraction") is not None
+                else None
+            ),
+            csa_feasible_solid_angle_sr=(
+                float(value["csa_feasible_solid_angle_sr"])
+                if value.get("csa_feasible_solid_angle_sr") is not None
+                else None
+            ),
+            csa_angular_clearance_deg=(
+                float(value["csa_angular_clearance_deg"])
+                if value.get("csa_angular_clearance_deg") is not None
+                else None
+            ),
+            csa_applicable=(
+                bool(value["csa_applicable"])
+                if value.get("csa_applicable") is not None
+                else None
+            ),
         )
 
 
@@ -163,10 +213,22 @@ class PoseRoadmap:
     nodes: tuple[RoadmapNode, ...]
     edges: tuple[RoadmapEdge, ...]
     unresolved_metastable_node_ids: tuple[int, ...]
+    pose_ranking_method: PoseRankingMethod = "rocking"
+    robustness_method: RobustnessMethod = "rocking"
+    minimum_csa_score: float = DEFAULT_CSA_ROBUST_THRESHOLD
+    csa_cap_half_angle_deg: float = DEFAULT_CSA_CAP_HALF_ANGLE_DEG
+    csa_direction_samples: int = DEFAULT_CSA_DIRECTION_SAMPLES
+    csa_rocking_fallback_pose_ids: tuple[int, ...] = ()
+    friction_policy: FrictionPolicy = "zero"
 
     def node(self, node_or_pose_id: int) -> RoadmapNode:
+        # Roadmap display IDs take precedence because the compact 0..N-1
+        # namespace can overlap an original catalog member ID.
         for node in self.nodes:
-            if node.node_id == node_or_pose_id or node_or_pose_id in node.pose_ids:
+            if node.node_id == node_or_pose_id:
+                return node
+        for node in self.nodes:
+            if node_or_pose_id in node.pose_ids:
                 return node
         raise KeyError(node_or_pose_id)
 
@@ -185,6 +247,13 @@ class PoseRoadmap:
             "main_face_min_span_mm": self.main_face_min_span_mm,
             "opposite_x_min_height_mm": self.opposite_x_min_height_mm,
             "robust_barrier_threshold_mm": self.robust_barrier_threshold_mm,
+            "friction_policy": self.friction_policy,
+            "pose_ranking_method": self.pose_ranking_method,
+            "robustness_method": self.robustness_method,
+            "minimum_csa_score": self.minimum_csa_score,
+            "csa_cap_half_angle_deg": self.csa_cap_half_angle_deg,
+            "csa_direction_samples": self.csa_direction_samples,
+            "csa_rocking_fallback_pose_ids": self.csa_rocking_fallback_pose_ids,
             "axis_tolerance_deg": self.axis_tolerance_deg,
             "node_counts": {
                 "total": len(self.nodes),
@@ -225,6 +294,24 @@ class PoseRoadmap:
             unresolved_metastable_node_ids=tuple(
                 int(item) for item in value.get("unresolved_metastable_node_ids", ())
             ),
+            pose_ranking_method=value.get("pose_ranking_method", "rocking"),
+            robustness_method=value.get("robustness_method", "rocking"),
+            minimum_csa_score=float(
+                value.get("minimum_csa_score", DEFAULT_CSA_ROBUST_THRESHOLD)
+            ),
+            csa_cap_half_angle_deg=float(
+                value.get(
+                    "csa_cap_half_angle_deg", DEFAULT_CSA_CAP_HALF_ANGLE_DEG
+                )
+            ),
+            csa_direction_samples=int(
+                value.get("csa_direction_samples", DEFAULT_CSA_DIRECTION_SAMPLES)
+            ),
+            csa_rocking_fallback_pose_ids=tuple(
+                int(item)
+                for item in value.get("csa_rocking_fallback_pose_ids", ())
+            ),
+            friction_policy=value.get("friction_policy", "range"),
         )
 
 
@@ -824,6 +911,72 @@ def _passive_edges(
     return edges, tuple(unresolved)
 
 
+def _relabel_roadmap(
+    nodes: list[RoadmapNode],
+    edges: list[RoadmapEdge],
+    unresolved_metastable_node_ids: tuple[int, ...],
+    *,
+    pose_ranking_method: PoseRankingMethod = "rocking",
+) -> tuple[tuple[RoadmapNode, ...], tuple[RoadmapEdge, ...], tuple[int, ...]]:
+    """Assign compact stability-ranked roadmap IDs."""
+
+    if pose_ranking_method == "rocking":
+        ordered_nodes = sorted(
+            nodes,
+            key=lambda node: (
+                -node.rocking_barrier_mm,
+                node.original_catalog_pose_id,
+            ),
+        )
+    elif pose_ranking_method == "csa":
+        ordered_nodes = sorted(
+            nodes,
+            key=lambda node: (
+                node.kind != "robust",
+                node.csa_stability_index is None,
+                -(
+                    round(node.csa_stability_index, 6)
+                    if node.csa_stability_index is not None
+                    else 0.0
+                ),
+                -node.rocking_barrier_mm,
+                node.original_catalog_pose_id,
+            ),
+        )
+    else:
+        raise ValueError("pose_ranking_method must be 'rocking' or 'csa'.")
+    new_id_by_old_id = {
+        node.node_id: new_id for new_id, node in enumerate(ordered_nodes)
+    }
+    relabelled_nodes = tuple(
+        replace(node, node_id=new_id_by_old_id[node.node_id])
+        for node in ordered_nodes
+    )
+
+    relabelled_edges: list[RoadmapEdge] = []
+    for edge in edges:
+        source = new_id_by_old_id[edge.source]
+        target = new_id_by_old_id[edge.target]
+        prefix = edge.edge_id.split(":", 1)[0]
+        edge_id = (
+            f"{prefix}:{source}->{target}"
+            if edge.transition_kind == "passive_tip"
+            else f"{prefix}:{source}->{target}:{edge.actuation}"
+        )
+        relabelled_edges.append(
+            replace(edge, edge_id=edge_id, source=source, target=target)
+        )
+
+    return (
+        relabelled_nodes,
+        tuple(relabelled_edges),
+        tuple(
+            new_id_by_old_id[node_id]
+            for node_id in unresolved_metastable_node_ids
+        ),
+    )
+
+
 def build_pose_roadmap(
     mesh_path: str | Path,
     *,
@@ -831,13 +984,19 @@ def build_pose_roadmap(
     beta_deg: float = 20.0,
     onset_alpha_deg: float = 45.0,
     onset_beta_deg: float = 15.0,
-    symmetry_tolerance_mm: float = 0.5,
+    symmetry_tolerance_mm: float | None = None,
     angular_tolerance_deg: float = 1.0,
     surface_displacement_tolerance_mm: float = 0.5,
     robust_barrier_threshold_mm: float = 0.20,
     minimum_face_face_braking_g: float = 0.10,
     opposite_x_min_height_mm: float = 25.0,
     geometry_status: str = "provisional",
+    pose_ranking_method: PoseRankingMethod = "rocking",
+    robustness_method: RobustnessMethod = "rocking",
+    minimum_csa_score: float = DEFAULT_CSA_ROBUST_THRESHOLD,
+    csa_cap_half_angle_deg: float = DEFAULT_CSA_CAP_HALF_ANGLE_DEG,
+    csa_direction_samples: int = DEFAULT_CSA_DIRECTION_SAMPLES,
+    friction_policy: FrictionPolicy = "zero",
 ) -> PoseRoadmap:
     """Build the robust/metastable physical pose roadmap for one part."""
 
@@ -845,6 +1004,14 @@ def build_pose_roadmap(
         raise ValueError("geometry_status must be 'provisional' or 'verified'.")
     if opposite_x_min_height_mm < 0.0:
         raise ValueError("opposite_x_min_height_mm must be non-negative.")
+    if pose_ranking_method not in {"rocking", "csa"}:
+        raise ValueError("pose_ranking_method must be 'rocking' or 'csa'.")
+    if robustness_method not in {"rocking", "csa"}:
+        raise ValueError("robustness_method must be 'rocking' or 'csa'.")
+    if friction_policy not in {"range", "zero"}:
+        raise ValueError("friction_policy must be 'range' or 'zero'.")
+    if not math.isfinite(minimum_csa_score) or not 0.0 <= minimum_csa_score <= 1.0:
+        raise ValueError("minimum_csa_score must lie between 0 and 1.")
     catalog = build_pose_catalog(mesh_path)
     nominal = analyze_pose_stability(
         mesh_path,
@@ -853,9 +1020,15 @@ def build_pose_roadmap(
         onset_alpha_deg=onset_alpha_deg,
         onset_beta_deg=onset_beta_deg,
         catalog=catalog,
+        quasistatic_only=catalog.continuous_symmetry_axis_part is None,
+        friction_policy=friction_policy,
     )
     nominal_ids = nominal.stable_pose_ids
-    conditional_ids = nominal.friction_dependent_pose_ids
+    conditional_ids = (
+        nominal.friction_dependent_pose_ids
+        if not nominal.quasistatic_only
+        else ()
+    )
     roadmap_pose_ids = (
         tuple(sorted(set(nominal_ids + conditional_ids)))
         if catalog.continuous_symmetry_axis_part is not None
@@ -884,7 +1057,58 @@ def build_pose_roadmap(
         minimum_barrier_height_mm=robust_barrier_threshold_mm,
         minimum_face_face_braking_g=minimum_face_face_braking_g,
     )
-    robust_pose_ids = set(robust_filter.accepted_pose_ids).intersection(nominal_ids)
+    rocking_robust_pose_ids = set(robust_filter.accepted_pose_ids).intersection(
+        nominal_ids
+    )
+    csa = None
+    csa_filter = None
+    csa_rocking_fallback_pose_ids: set[int] = set()
+    if pose_ranking_method == "csa" or robustness_method == "csa":
+        csa = analyze_contact_wrench_solid_angle(
+            mesh_path,
+            pose_ids=roadmap_pose_ids,
+            alpha_deg=alpha_deg,
+            beta_deg=beta_deg,
+            onset_alpha_deg=onset_alpha_deg,
+            onset_beta_deg=onset_beta_deg,
+            cap_half_angle_deg=csa_cap_half_angle_deg,
+            direction_samples=csa_direction_samples,
+            catalog=catalog,
+        )
+        csa_filter = filter_contact_wrench_solid_angle(
+            csa, minimum_score=minimum_csa_score
+        )
+
+    if robustness_method == "rocking":
+        robust_pose_ids = set(rocking_robust_pose_ids)
+    else:
+        assert csa is not None and csa_filter is not None
+        disturbance_by_pose_id = {
+            value.pose_id: value for value in disturbance.capacities
+        }
+        poses_by_id = {pose.pose_id: pose for pose in catalog.poses}
+        robust_pose_ids = set()
+        for pose_id in csa_filter.accepted_pose_ids:
+            pose = poses_by_id[pose_id]
+            face_face = (
+                pose.floor_contact_type == "face"
+                and pose.wall_contact_type == "face"
+            )
+            if (
+                not face_face
+                or disturbance_by_pose_id[pose_id].critical_braking_g
+                >= minimum_face_face_braking_g
+            ):
+                robust_pose_ids.add(pose_id)
+        # A fixed-contact solid-angle model cannot represent a circular part
+        # reseating continuously as its line contacts roll.  Preserve the
+        # established rocking classification for those explicitly reported
+        # not-applicable states instead of assigning a misleading zero score.
+        csa_rocking_fallback_pose_ids = set(
+            csa_filter.not_applicable_pose_ids
+        ).intersection(rocking_robust_pose_ids)
+        robust_pose_ids.update(csa_rocking_fallback_pose_ids)
+        robust_pose_ids.intersection_update(nominal_ids)
     poses = {pose.pose_id: pose for pose in catalog.poses}
     if catalog.continuous_symmetry_axis_part is not None:
         # End-face/mantle states of an axially asymmetric Cinf body can be
@@ -931,11 +1155,25 @@ def build_pose_roadmap(
         for face in main_faces
     )
     barriers = {value.pose_id: value for value in rocking.barriers}
+    csa_by_pose_id = (
+        {value.pose_id: value for value in csa.poses} if csa is not None else {}
+    )
     nodes: list[RoadmapNode] = []
     for pose_class in clustering.classes:
         representative = poses[pose_class.representative_pose_id]
         main_floor, main_wall = _class_main_face_placement(
             pose_class, poses, main_face_ids
+        )
+        class_csa_values = tuple(
+            csa_by_pose_id[pose_id]
+            for pose_id in pose_class.pose_ids
+            if pose_id in csa_by_pose_id
+        )
+        class_csa_applicable = (
+            None
+            if csa is None
+            else bool(class_csa_values)
+            and all(value.applicable for value in class_csa_values)
         )
         nodes.append(
             RoadmapNode(
@@ -955,6 +1193,30 @@ def build_pose_roadmap(
                 ),
                 main_face_on_floor=main_floor,
                 main_face_on_wall=main_wall,
+                csa_stability_index=(
+                    min(value.score for value in class_csa_values)
+                    if class_csa_applicable
+                    else None
+                ),
+                csa_feasible_fraction=(
+                    min(value.feasible_fraction for value in class_csa_values)
+                    if class_csa_applicable
+                    else None
+                ),
+                csa_feasible_solid_angle_sr=(
+                    min(
+                        value.feasible_solid_angle_sr
+                        for value in class_csa_values
+                    )
+                    if class_csa_applicable
+                    else None
+                ),
+                csa_angular_clearance_deg=(
+                    min(value.angular_clearance_deg for value in class_csa_values)
+                    if class_csa_applicable
+                    else None
+                ),
+                csa_applicable=class_csa_applicable,
             )
         )
     nodes_by_id = {node.node_id: node for node in nodes}
@@ -1020,6 +1282,12 @@ def build_pose_roadmap(
         gravity,
         robust_barrier_threshold_mm,
     )
+    relabelled_nodes, relabelled_edges, relabelled_unresolved = _relabel_roadmap(
+        nodes,
+        actuated + relaxed + passive,
+        unresolved,
+        pose_ranking_method=pose_ranking_method,
+    )
     return PoseRoadmap(
         schema_version=1,
         source=str(Path(mesh_path).expanduser().resolve()),
@@ -1035,9 +1303,18 @@ def build_pose_roadmap(
         opposite_x_min_height_mm=opposite_x_min_height_mm,
         robust_barrier_threshold_mm=robust_barrier_threshold_mm,
         axis_tolerance_deg=angular_tolerance_deg,
-        nodes=tuple(nodes),
-        edges=tuple(actuated + relaxed + passive),
-        unresolved_metastable_node_ids=unresolved,
+        nodes=relabelled_nodes,
+        edges=relabelled_edges,
+        unresolved_metastable_node_ids=relabelled_unresolved,
+        pose_ranking_method=pose_ranking_method,
+        robustness_method=robustness_method,
+        minimum_csa_score=minimum_csa_score,
+        csa_cap_half_angle_deg=csa_cap_half_angle_deg,
+        csa_direction_samples=csa_direction_samples,
+        csa_rocking_fallback_pose_ids=tuple(
+            sorted(csa_rocking_fallback_pose_ids)
+        ),
+        friction_policy=friction_policy,
     )
 
 
@@ -1115,15 +1392,18 @@ def save_roadmap_json(roadmap: PoseRoadmap, path: str | Path) -> Path:
     try:
         thumbnails = create_pose_thumbnails(
             roadmap.source,
-            (node.node_id for node in roadmap.nodes),
+            (node.original_catalog_pose_id for node in roadmap.nodes),
             width_px=240,
             height_px=180,
             dpi=120,
         )
-        for node_payload in payload["nodes"]:
-            pose_id = int(node_payload["node_id"])
+        for node, node_payload in zip(roadmap.nodes, payload["nodes"], strict=True):
             buffer = BytesIO()
-            plt.imsave(buffer, thumbnails[pose_id], format="png")
+            plt.imsave(
+                buffer,
+                thumbnails[node.original_catalog_pose_id],
+                format="png",
+            )
             node_payload["thumbnail_png_base64"] = base64.b64encode(
                 buffer.getvalue()
             ).decode("ascii")
@@ -1242,6 +1522,9 @@ def roadmap_handover_dict(roadmap: PoseRoadmap) -> dict[str, Any]:
         },
         "classification": {
             "symmetry": roadmap.symmetry_symbol,
+            "friction_policy": roadmap.friction_policy,
+            "pose_ranking_method": roadmap.pose_ranking_method,
+            "robustness_method": roadmap.robustness_method,
             "robust_pose_ids": tuple(
                 node.node_id for node in roadmap.nodes if node.kind == "robust"
             ),
@@ -1252,11 +1535,18 @@ def roadmap_handover_dict(roadmap: PoseRoadmap) -> dict[str, Any]:
             "main_face_min_span_mm": roadmap.main_face_min_span_mm,
             "opposite_x_min_height_mm": roadmap.opposite_x_min_height_mm,
             "robust_barrier_threshold_mm": roadmap.robust_barrier_threshold_mm,
+            "minimum_csa_score": roadmap.minimum_csa_score,
+            "csa_cap_half_angle_deg": roadmap.csa_cap_half_angle_deg,
+            "csa_direction_samples": roadmap.csa_direction_samples,
+            "csa_rocking_fallback_catalog_pose_ids": (
+                roadmap.csa_rocking_fallback_pose_ids
+            ),
             "unresolved_metastable_pose_ids": roadmap.unresolved_metastable_node_ids,
         },
         "poses": [
             {
                 "id": node.node_id,
+                "original_catalog_pose_id": node.original_catalog_pose_id,
                 "equivalent_catalog_pose_ids": node.pose_ids,
                 "stability": node.kind,
                 "planner_role": (
@@ -1270,6 +1560,11 @@ def roadmap_handover_dict(roadmap: PoseRoadmap) -> dict[str, Any]:
                     "main_face_on_wall": node.main_face_on_wall,
                 },
                 "rocking_barrier_mm": node.rocking_barrier_mm,
+                "csa_stability_index": node.csa_stability_index,
+                "csa_feasible_fraction": node.csa_feasible_fraction,
+                "csa_feasible_solid_angle_sr": node.csa_feasible_solid_angle_sr,
+                "csa_angular_clearance_deg": node.csa_angular_clearance_deg,
+                "csa_applicable": node.csa_applicable,
                 "cad_status": node.cad_status,
             }
             for node in roadmap.nodes
@@ -1330,6 +1625,10 @@ bekannten **gerichteten** direkten Übergänge. Eine Kante von `from_pose` nach
 ## Posen
 
 - `id` ist die Roadmap-ID und wird in `from_pose`/`to_pose` referenziert.
+- Roadmap-IDs beginnen bei 0 und folgen der unter
+  `classification.pose_ranking_method` gewählten Stabilitätsmetrik in
+  absteigender Reihenfolge. `original_catalog_pose_id`
+  und `equivalent_catalog_pose_ids` bewahren die ursprünglichen Katalog-IDs.
 - `classification.robust_pose_ids` listet alle stabilen Zielposen direkt auf;
   `metastable_pose_ids` enthält die möglichen Zwischenlagen.
 - `equivalent_catalog_pose_ids` sind durch praktische Rotationssymmetrie
@@ -1371,8 +1670,7 @@ Ausfüllen vorgesehen:
 
 Für die spätere Routenplanung sollte nach ausreichenden Versuchen bevorzugt
 `empirical_success_rate` verwendet werden. Bis dahin kann der geometrische
-Score als klar gekennzeichneter vorläufiger Ersatzwert dienen. Df1a ist wegen
-des derzeit fehlerhaften CAD weiterhin `provisional`.
+Score als klar gekennzeichneter vorläufiger Ersatzwert dienen.
 """
 
 
@@ -1388,18 +1686,31 @@ def save_roadmap_graphml(roadmap: PoseRoadmap, path: str | Path) -> Path:
     destination.parent.mkdir(parents=True, exist_ok=True)
     graph = nx.MultiDiGraph()
     for node in roadmap.nodes:
-        graph.add_node(
-            node.node_id,
-            pose_ids="/".join(str(value) for value in node.pose_ids),
-            kind=node.kind,
-            cad_status=node.cad_status,
-            main_face_min_span_mm=roadmap.main_face_min_span_mm,
-            rocking_barrier_mm=node.rocking_barrier_mm,
-            floor_contact=node.floor_contact_topology,
-            wall_contact=node.wall_contact_topology,
-            main_face_on_floor=node.main_face_on_floor,
-            main_face_on_wall=node.main_face_on_wall,
-        )
+        attributes: dict[str, Any] = {
+            "original_catalog_pose_id": node.original_catalog_pose_id,
+            "pose_ids": "/".join(str(value) for value in node.pose_ids),
+            "kind": node.kind,
+            "cad_status": node.cad_status,
+            "main_face_min_span_mm": roadmap.main_face_min_span_mm,
+            "rocking_barrier_mm": node.rocking_barrier_mm,
+            "floor_contact": node.floor_contact_topology,
+            "wall_contact": node.wall_contact_topology,
+            "main_face_on_floor": node.main_face_on_floor,
+            "main_face_on_wall": node.main_face_on_wall,
+            "pose_ranking_method": roadmap.pose_ranking_method,
+            "robustness_method": roadmap.robustness_method,
+        }
+        if node.csa_applicable is not None:
+            attributes["csa_applicable"] = node.csa_applicable
+        for key, value in (
+            ("csa_stability_index", node.csa_stability_index),
+            ("csa_feasible_fraction", node.csa_feasible_fraction),
+            ("csa_feasible_solid_angle_sr", node.csa_feasible_solid_angle_sr),
+            ("csa_angular_clearance_deg", node.csa_angular_clearance_deg),
+        ):
+            if value is not None:
+                attributes[key] = value
+        graph.add_node(node.node_id, **attributes)
     for edge in roadmap.edges:
         graph.add_edge(
             edge.source,
@@ -1419,6 +1730,292 @@ def save_roadmap_graphml(roadmap: PoseRoadmap, path: str | Path) -> Path:
     return destination
 
 
+def _format_roadmap_node_plot_label(
+    node: RoadmapNode, *, show_csa: bool
+) -> str:
+    """Format the stability metrics shown beneath a roadmap node."""
+
+    label = f"Rocking barrier {node.rocking_barrier_mm:.3f} mm"
+    if show_csa:
+        label += (
+            f"\nCWSA {node.csa_stability_index:.3f}"
+            if node.csa_stability_index is not None
+            else "\nCWSA n/a"
+        )
+    return label
+
+
+_ROADMAP_AXIS_COLORS = {
+    "x": "#d62728",
+    "y": "#2ca02c",
+    "z": "#1f77b4",
+}
+
+
+def _roadmap_transition_axis(edge: RoadmapEdge) -> Literal["x", "y", "z"]:
+    """Return the chute axis that best describes a plotted transition."""
+
+    if edge.actuation in {
+        "floor_main_neg_x",
+        "floor_main_pos_x",
+        "wall_main_neg_x",
+        "wall_main_pos_x",
+    }:
+        return "x"
+    if edge.actuation == "free_y":
+        return "y"
+    if edge.actuation == "free_z":
+        return "z"
+
+    # Passive rocking axes need not be perfectly aligned with a principal
+    # chute axis. Colour them by their dominant component while retaining the
+    # dashed passive-transition line style.
+    dominant = int(np.argmax(np.abs(np.asarray(edge.axis_chute, dtype=float))))
+    return ("x", "y", "z")[dominant]
+
+
+def _roadmap_layout_order(roadmap: PoseRoadmap) -> list[int]:
+    """Find a deterministic low-bandwidth order before placing node rows."""
+
+    interaction = nx.Graph()
+    interaction.add_nodes_from(sorted(node.node_id for node in roadmap.nodes))
+    for edge in roadmap.edges:
+        if interaction.has_edge(edge.source, edge.target):
+            interaction[edge.source][edge.target]["weight"] += 1
+        else:
+            interaction.add_edge(edge.source, edge.target, weight=1)
+    if interaction.number_of_nodes() <= 1:
+        return list(interaction.nodes)
+    return list(nx.utils.reverse_cuthill_mckee_ordering(interaction))
+
+
+def _roadmap_plot_positions(
+    roadmap: PoseRoadmap,
+    *,
+    target_aspect_ratio: float = 1.5,
+    minimize_path_length: bool = True,
+) -> tuple[dict[int, np.ndarray], int, int]:
+    """Arrange poses in a compact grid matching the common canvas ratio.
+
+    The reverse Cuthill-McKee order keeps highly connected poses near one
+    another. Serpentine rows preserve that locality at row boundaries. Robust
+    and metastable poses deliberately share rows: brightness carries the
+    stability distinction without adding an otherwise unnecessary band gap.
+    A deterministic node-swap pass then shortens the transitions while keeping
+    every pose on the same orderly grid.
+    """
+
+    if target_aspect_ratio <= 0.0:
+        raise ValueError("target_aspect_ratio must be positive.")
+    layout_order = _roadmap_layout_order(roadmap)
+    node_count = max(len(layout_order), 1)
+    candidates: list[tuple[float, int, int]] = []
+    for candidate_columns in range(1, node_count + 1):
+        candidate_rows = math.ceil(node_count / candidate_columns)
+        occupied_aspect = candidate_columns / candidate_rows
+        aspect_error = abs(math.log(occupied_aspect / target_aspect_ratio))
+        unused_fraction = (
+            candidate_columns * candidate_rows - node_count
+        ) / node_count
+        candidates.append(
+            (aspect_error + 0.12 * unused_fraction, candidate_columns, candidate_rows)
+        )
+    _, columns, row_count = min(candidates)
+    horizontal_spacing = 2.8
+    vertical_spacing = 3.0
+    positions: dict[int, np.ndarray] = {}
+    for start in range(0, len(layout_order), columns):
+        row_index = start // columns
+        row_nodes = layout_order[start : start + columns]
+        x_values = (
+            np.arange(len(row_nodes), dtype=float)
+            - (len(row_nodes) - 1.0) / 2.0
+        ) * horizontal_spacing
+        if row_index % 2:
+            x_values = x_values[::-1]
+        for node_id, x_value in zip(row_nodes, x_values, strict=True):
+            positions[node_id] = np.array(
+                [float(x_value), -row_index * vertical_spacing], dtype=float
+            )
+    if minimize_path_length:
+        positions = _minimise_roadmap_path_length(roadmap, positions)
+    return positions, columns, row_count
+
+
+def _roadmap_total_path_length(
+    roadmap: PoseRoadmap, positions: dict[int, np.ndarray]
+) -> float:
+    """Return the summed straight-line length of every transition."""
+
+    return float(
+        sum(
+            np.linalg.norm(
+                np.asarray(positions[edge.target], dtype=float)
+                - np.asarray(positions[edge.source], dtype=float)
+            )
+            for edge in roadmap.edges
+        )
+    )
+
+
+def _minimise_roadmap_path_length(
+    roadmap: PoseRoadmap, positions: dict[int, np.ndarray]
+) -> dict[int, np.ndarray]:
+    """Shorten transitions by swapping nodes between fixed orderly slots."""
+
+    result = {
+        node_id: np.asarray(position, dtype=float).copy()
+        for node_id, position in positions.items()
+    }
+    node_ids = sorted(result)
+    edge_weights: dict[tuple[int, int], int] = {}
+    incident_pairs: dict[int, set[tuple[int, int]]] = {
+        node_id: set() for node_id in node_ids
+    }
+    for edge in roadmap.edges:
+        if edge.source == edge.target:
+            continue
+        pair = tuple(sorted((edge.source, edge.target)))
+        edge_weights[pair] = edge_weights.get(pair, 0) + 1
+        incident_pairs[edge.source].add(pair)
+        incident_pairs[edge.target].add(pair)
+
+    def affected_cost(pairs: set[tuple[int, int]]) -> float:
+        return float(
+            sum(
+                edge_weights[pair]
+                * np.linalg.norm(result[pair[1]] - result[pair[0]])
+                for pair in pairs
+            )
+        )
+
+    # Best-improvement pair swaps are deterministic and inexpensive for the
+    # practical roadmap sizes (currently at most a few dozen nodes).
+    for _ in range(max(1, 2 * len(node_ids))):
+        best_improvement = 1e-9
+        best_pair: tuple[int, int] | None = None
+        for left_index, left in enumerate(node_ids):
+            for right in node_ids[left_index + 1 :]:
+                affected = incident_pairs[left] | incident_pairs[right]
+                before = affected_cost(affected)
+                result[left], result[right] = result[right], result[left]
+                after = affected_cost(affected)
+                result[left], result[right] = result[right], result[left]
+                improvement = before - after
+                if improvement > best_improvement:
+                    best_improvement = improvement
+                    best_pair = (left, right)
+        if best_pair is None:
+            break
+        left, right = best_pair
+        result[left], result[right] = result[right], result[left]
+    return result
+
+
+def _roadmap_edge_curvatures(
+    roadmap: PoseRoadmap,
+    positions: dict[int, np.ndarray] | None = None,
+) -> dict[str, float]:
+    """Route long and parallel transitions through visibly separate lanes."""
+
+    grouped: dict[tuple[int, int], list[RoadmapEdge]] = {}
+    for edge in roadmap.edges:
+        grouped.setdefault((edge.source, edge.target), []).append(edge)
+    curvatures: dict[str, float] = {}
+    for (source, target), edges in grouped.items():
+        if positions is None:
+            base_curvature = 0.12
+        else:
+            grid_displacement = (
+                np.asarray(positions[target], dtype=float)
+                - np.asarray(positions[source], dtype=float)
+            ) / np.array((2.8, 3.0), dtype=float)
+            crossed_cells = float(np.linalg.norm(grid_displacement))
+            base_magnitude = min(0.48, 0.11 + 0.035 * crossed_cells)
+            # Use one sign for both directions of an unordered pair. Reversing
+            # the arrow then naturally sends the return path to the other side.
+            sign = (
+                1.0
+                if (min(source, target) + max(source, target)) % 2 == 0
+                else -1.0
+            )
+            base_curvature = sign * base_magnitude
+        middle = (len(edges) - 1.0) / 2.0
+        for index, edge in enumerate(edges):
+            curvature = base_curvature + (index - middle) * 0.085
+            curvatures[edge.edge_id] = float(np.clip(curvature, -0.68, 0.68))
+    return curvatures
+
+
+def _format_roadmap_edge_plot_label(edge: RoadmapEdge) -> str:
+    """Format one compact signed-angle label for a robust transition."""
+
+    angle = 0.0 if abs(edge.signed_angle_deg) < 0.05 else edge.signed_angle_deg
+    direction = "+" if angle >= 0.0 else "−"
+    return f"{direction}{abs(angle):.1f}°"
+
+
+def _roadmap_edge_label_position(
+    edge: RoadmapEdge,
+    positions: dict[int, np.ndarray],
+    curvature: float,
+) -> np.ndarray:
+    """Return the midpoint of the quadratic curve used to draw an edge."""
+
+    source = np.asarray(positions[edge.source], dtype=float)
+    target = np.asarray(positions[edge.target], dtype=float)
+    delta = target - source
+    control = (source + target) / 2.0 + curvature * np.array(
+        (delta[1], -delta[0]), dtype=float
+    )
+    return 0.25 * source + 0.5 * control + 0.25 * target
+
+
+def _separate_roadmap_angle_labels(
+    figure: matplotlib.figure.Figure,
+    annotations: list[Annotation],
+) -> None:
+    """Move overlapping angle labels by small deterministic point offsets."""
+
+    if not annotations:
+        return
+    for annotation in annotations:
+        annotation.set_position((0.0, 0.0))
+    figure.canvas.draw()
+    renderer = figure.canvas.get_renderer()
+    pixels_per_point = figure.dpi / 72.0
+    occupied: list[matplotlib.transforms.Bbox] = []
+    candidate_offsets = [(0.0, 0.0)]
+    for radius in range(8, 129, 8):
+        candidate_offsets.extend(
+            (
+                radius * math.cos(index * math.pi / 4.0),
+                radius * math.sin(index * math.pi / 4.0),
+            )
+            for index in range(8)
+        )
+
+    for annotation in annotations:
+        bbox_patch = annotation.get_bbox_patch()
+        if bbox_patch is None:
+            base_bbox = annotation.get_window_extent(renderer)
+        else:
+            base_bbox = bbox_patch.get_window_extent(renderer)
+        for offset in candidate_offsets:
+            bbox = base_bbox.translated(
+                offset[0] * pixels_per_point,
+                offset[1] * pixels_per_point,
+            )
+            padded_bbox = bbox.expanded(1.12, 1.25)
+            if not any(padded_bbox.overlaps(existing) for existing in occupied):
+                annotation.set_position(offset)
+                occupied.append(padded_bbox)
+                break
+        else:  # pragma: no cover - more labels than current roadmaps contain
+            occupied.append(padded_bbox)
+    figure.canvas.draw()
+
+
 def render_pose_roadmap(
     roadmap: PoseRoadmap,
     output_stem: str | Path,
@@ -1427,12 +2024,16 @@ def render_pose_roadmap(
 
     stem = Path(output_stem).expanduser().resolve()
     stem.parent.mkdir(parents=True, exist_ok=True)
-    graph = nx.MultiDiGraph()
+    graph = nx.DiGraph()
     graph.add_nodes_from(node.node_id for node in roadmap.nodes)
-    graph.add_edges_from((edge.source, edge.target, {"edge": edge}) for edge in roadmap.edges)
-    positions = nx.spring_layout(graph, seed=42, k=1.25)
-    figure, axis = plt.subplots(figsize=(16, 10), facecolor="white")
+    graph.add_edges_from((edge.source, edge.target) for edge in roadmap.edges)
+    positions, _, _ = _roadmap_plot_positions(roadmap)
+    figure, axis = plt.subplots(figsize=(18.0, 12.0), facecolor="white")
     axis.set_axis_off()
+    x_values = [float(position[0]) for position in positions.values()] or [0.0]
+    y_values = [float(position[1]) for position in positions.values()] or [0.0]
+    axis.set_xlim(min(x_values) - 2.4, max(x_values) + 2.4)
+    axis.set_ylim(min(y_values) - 3.0, max(y_values) + 2.4)
     robust = [node.node_id for node in roadmap.nodes if node.kind == "robust"]
     metastable = [node.node_id for node in roadmap.nodes if node.kind == "metastable"]
     nx.draw_networkx_nodes(
@@ -1456,68 +2057,87 @@ def render_pose_roadmap(
         ax=axis,
     )
     meta_collection.set_linestyle("--")
-    colors = {
-        "floor_main_neg_x": "#1f77b4",
-        "wall_main_neg_x": "#1f77b4",
-        "floor_main_pos_x": "#d62728",
-        "wall_main_pos_x": "#d62728",
-        "free_y": "#2ca02c",
-        "free_z": "#9467bd",
-        "passive": "#7f7f7f",
-    }
-    for edge in roadmap.edges:
+    nodes_by_id = {node.node_id: node for node in roadmap.nodes}
+    curvatures = _roadmap_edge_curvatures(roadmap, positions)
+    # Draw faint metastable-linked transitions first so robust-only paths stay
+    # visible on top even in roadmaps with hundreds of edges.
+    edges_for_drawing = sorted(
+        roadmap.edges,
+        key=lambda edge: (
+            nodes_by_id[edge.source].kind == "robust"
+            and nodes_by_id[edge.target].kind == "robust"
+        ),
+    )
+    for edge in edges_for_drawing:
+        robust_only = (
+            nodes_by_id[edge.source].kind == "robust"
+            and nodes_by_id[edge.target].kind == "robust"
+        )
         nx.draw_networkx_edges(
             graph,
             positions,
             edgelist=[(edge.source, edge.target)],
-            edge_color=colors[edge.actuation],
-            style="dashed" if edge.transition_kind == "passive_tip" else "solid",
-            width=1.1 if edge.transition_kind == "passive_tip" else 1.8,
-            alpha=0.72,
+            edge_color=_ROADMAP_AXIS_COLORS[_roadmap_transition_axis(edge)],
+            style="solid" if robust_only else "dashed",
+            width=2.45 if robust_only else 0.8,
+            alpha=0.88 if robust_only else 0.22,
             arrows=True,
-            arrowsize=14,
-            connectionstyle="arc3,rad=0.08",
+            arrowsize=15 if robust_only else 9,
+            connectionstyle=f"arc3,rad={curvatures[edge.edge_id]:.4f}",
+            min_source_margin=21,
+            min_target_margin=21,
             ax=axis,
         )
-    edge_labels: dict[tuple[int, int], list[str]] = {}
-    action_labels = {
-        "floor_main_neg_x": "−X (Boden)",
-        "floor_main_pos_x": "+X (Boden, h>Grenze)",
-        "wall_main_neg_x": "−X (Wand, h>Grenze)",
-        "wall_main_pos_x": "+X (Wand)",
-        "free_y": "Y",
-        "free_z": "Z",
-    }
+    # Keep angle labels only on the bright robust network. Metastable-linked
+    # paths remain available as quiet routing context without text congestion.
+    angle_annotations: list[Annotation] = []
     for edge in roadmap.edges:
-        if edge.transition_kind == "passive_tip":
-            label = f"passiv Δh={edge.escape_barrier_mm:.3f}mm"
-        else:
-            settling = (
-                " via " + "/".join(str(value) for value in edge.settling_pose_ids)
-                if edge.settling_pose_ids
-                else ""
+        robust_only = (
+            nodes_by_id[edge.source].kind == "robust"
+            and nodes_by_id[edge.target].kind == "robust"
+        )
+        if not robust_only:
+            continue
+        label_color = _ROADMAP_AXIS_COLORS[_roadmap_transition_axis(edge)]
+        angle_annotations.append(
+            axis.annotate(
+                _format_roadmap_edge_plot_label(edge),
+                _roadmap_edge_label_position(
+                    edge, positions, curvatures[edge.edge_id]
+                ),
+                xytext=(0.0, 0.0),
+                textcoords="offset points",
+                ha="center",
+                va="center",
+                fontsize=6.2,
+                weight="bold",
+                color=label_color,
+                alpha=0.96,
+                bbox={
+                    "facecolor": "white",
+                    "edgecolor": "none",
+                    "alpha": 0.82,
+                    "pad": 0.25,
+                },
+                arrowprops={
+                    "arrowstyle": "-",
+                    "color": label_color,
+                    "alpha": 0.42,
+                    "linewidth": 0.5,
+                    "shrinkA": 2.0,
+                    "shrinkB": 1.0,
+                },
+                zorder=7,
             )
-            label = (
-                f"{action_labels[edge.actuation]} {edge.signed_angle_deg:+.1f}° "
-                f"w={edge.capture_width_deg:.1f}° s={edge.geometric_score:.3f}"
-                f"{settling}"
-            )
-        edge_labels.setdefault((edge.source, edge.target), []).append(label)
-    nx.draw_networkx_edge_labels(
-        graph,
-        positions,
-        edge_labels={key: "\n".join(value) for key, value in edge_labels.items()},
-        font_size=6,
-        rotate=False,
-        ax=axis,
-    )
+        )
     thumbnails = create_pose_thumbnails(
-        roadmap.source, (node.node_id for node in roadmap.nodes)
+        roadmap.source,
+        (node.original_catalog_pose_id for node in roadmap.nodes),
     )
     for node in roadmap.nodes:
         robust_node = node.kind == "robust"
         image = OffsetImage(
-            thumbnails[node.node_id],
+            thumbnails[node.original_catalog_pose_id],
             zoom=0.48 if robust_node else 0.37,
         )
         image.image.axes = axis
@@ -1535,8 +2155,34 @@ def render_pose_roadmap(
             zorder=8,
         )
         axis.add_artist(box)
+        show_csa = (
+            roadmap.pose_ranking_method == "csa"
+            or roadmap.robustness_method == "csa"
+        )
         axis.annotate(
-            "/".join(str(value) for value in node.pose_ids),
+            str(node.node_id),
+            positions[node.node_id],
+            xytext=(0, 69 if robust_node else 55),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            weight="bold",
+            color="#111827",
+            bbox={
+                "facecolor": "white",
+                "edgecolor": "none",
+                "alpha": 0.82,
+                "pad": 0.8,
+            },
+            zorder=9,
+        )
+        metric_label = _format_roadmap_node_plot_label(
+            node,
+            show_csa=show_csa,
+        )
+        axis.annotate(
+            metric_label,
             positions[node.node_id],
             xytext=(0, -69 if robust_node else -55),
             textcoords="offset points",
@@ -1547,27 +2193,49 @@ def render_pose_roadmap(
             bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.82, "pad": 0.8},
             zorder=9,
         )
+    _separate_roadmap_angle_labels(figure, angle_annotations)
     title = (
-        f"{Path(roadmap.source).stem}: Posenroadmap — "
+        f"{Path(roadmap.source).stem}: pose roadmap — "
         f"{sum(node.kind == 'robust' for node in roadmap.nodes)} robust, "
-        f"{sum(node.kind == 'metastable' for node in roadmap.nodes)} metastabil"
+        f"{sum(node.kind == 'metastable' for node in roadmap.nodes)} metastable"
     )
     axis.set_title(title, fontsize=16, pad=18)
     legend_items = [
-        Line2D([0], [0], color=colors["floor_main_neg_x"], lw=2, label="−X-Rotation"),
-        Line2D([0], [0], color=colors["wall_main_pos_x"], lw=2, label="+X-Rotation"),
-        Line2D([0], [0], color=colors["free_y"], lw=2, label="freie Y-Rotation"),
-        Line2D([0], [0], color=colors["free_z"], lw=2, label="freie Z-Rotation"),
-        Line2D([0], [0], color=colors["passive"], lw=1.5, ls="--", label="passives Kippen"),
-        Line2D([0], [0], marker="o", color="w", markerfacecolor="#2b8cbe", markeredgecolor="#084081", markersize=11, label="robust"),
-        Line2D([0], [0], marker="o", color="w", markerfacecolor="#e5e7eb", markeredgecolor="#6b7280", markersize=8, label="metastabil"),
+        Line2D([0], [0], color=_ROADMAP_AXIS_COLORS["x"], lw=2.4, label="X rotation"),
+        Line2D([0], [0], color=_ROADMAP_AXIS_COLORS["y"], lw=2.4, label="Y rotation"),
+        Line2D([0], [0], color=_ROADMAP_AXIS_COLORS["z"], lw=2.4, label="Z rotation"),
+        Line2D(
+            [0],
+            [0],
+            color="#111827",
+            lw=2.4,
+            ls="solid",
+            label="robust",
+        ),
+        Line2D(
+            [0],
+            [0],
+            color="#6b7280",
+            lw=0.9,
+            ls="dashed",
+            alpha=0.45,
+            label="metastable",
+        ),
     ]
-    axis.legend(handles=legend_items, loc="upper left", fontsize=8, frameon=True)
+    legend = axis.legend(
+        handles=legend_items,
+        loc="upper left",
+        fontsize=7,
+        ncol=2,
+        frameon=True,
+        framealpha=0.96,
+    )
+    legend.set_zorder(20)
     if roadmap.geometry_status == "provisional":
         provisional_note = (
-            "VORLAEUFIG — bekannt fehlerhaftes CAD; konkrete Uebergaenge neu berechnen"
+            "PROVISIONAL — known incorrect CAD; recalculate physical transitions"
             if Path(roadmap.source).stem.casefold() == "df1a"
-            else "VORLAEUFIG — CAD, Symmetrie und Posen experimentell validieren"
+            else "PROVISIONAL — validate CAD, symmetry and poses experimentally"
         )
         figure.text(
             0.5,
@@ -1582,7 +2250,7 @@ def render_pose_roadmap(
         figure.text(
             0.99,
             0.02,
-            "Passive Folgekante ungeloest fuer: "
+            "Unresolved passive successor edge for: "
             + "/".join(
                 str(value) for value in roadmap.unresolved_metastable_node_ids
             ),
@@ -1591,11 +2259,11 @@ def render_pose_roadmap(
             fontsize=9,
             weight="bold",
         )
-    figure.tight_layout(rect=(0.01, 0.04, 0.99, 0.98))
+    figure.subplots_adjust(left=0.04, right=0.98, bottom=0.06, top=0.88)
     svg_path = stem.with_suffix(".svg")
     png_path = stem.with_suffix(".png")
-    figure.savefig(svg_path, bbox_inches="tight")
-    figure.savefig(png_path, dpi=180, bbox_inches="tight")
+    figure.savefig(svg_path)
+    figure.savefig(png_path, dpi=220)
     plt.close(figure)
     return svg_path, png_path
 

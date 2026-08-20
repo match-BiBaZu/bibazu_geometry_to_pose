@@ -145,6 +145,14 @@ def verify_step_symmetry(
         rotation_vector = Rotation.from_matrix(rotation).as_rotvec()
         angle = float(np.linalg.norm(rotation_vector))
         axis = rotation_vector / angle
+        # Principal-axis symmetry detection carries harmless floating-point
+        # noise (typically around 1e-8) into otherwise exact coordinate axes.
+        # OpenCascade Boolean operations are extremely sensitive to that tiny
+        # tilt when nominally coincident faces are compared, so remove only
+        # numerically negligible axis components before verification.
+        axis[np.abs(axis) < 1e-7] = 0.0
+        axis /= np.linalg.norm(axis)
+        verification_rotation = Rotation.from_rotvec(axis * angle).as_matrix()
         transform = api["gp_Trsf"]()
         transform.SetRotation(
             api["gp_Ax1"](center, api["gp_Dir"](*axis.tolist())), angle
@@ -160,7 +168,7 @@ def verify_step_symmetry(
             0.0, (abs(first_volume) + abs(second_volume)) / step_volume
         )
 
-        transformed_vertices = (rotation @ centered_vertices.T).T
+        transformed_vertices = (verification_rotation @ centered_vertices.T).T
         forward_error = float(np.max(vertex_tree.query(transformed_vertices)[0]))
         backward_error = float(
             np.max(cKDTree(transformed_vertices).query(centered_vertices)[0])

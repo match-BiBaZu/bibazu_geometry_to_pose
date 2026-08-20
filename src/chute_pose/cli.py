@@ -11,14 +11,22 @@ from pathlib import Path
 import numpy as np
 
 from .contacts import build_pose_catalog
+from .csa import (
+    CSA_ALGORITHM_LABEL,
+    DEFAULT_CSA_CAP_HALF_ANGLE_DEG,
+    DEFAULT_CSA_DIRECTION_SAMPLES,
+    DEFAULT_CSA_ROBUST_THRESHOLD,
+    analyze_contact_wrench_solid_angle,
+)
 from .disturbance import (
     analyze_disturbance_robustness,
     filter_disturbance_robustness,
 )
-from .equivalence import cluster_practical_contact_poses
+from .equivalence import PracticalPoseClass, cluster_practical_contact_poses
 from .frame import ChuteFrame
 from .geometry import GeometryValidationError, inspect_mesh, load_solid_mesh
 from .roadmap import (
+    DEFAULT_ROADMAP_SYMMETRY_TOLERANCE_MM,
     build_pose_roadmap,
     export_pose_roadmap,
     find_best_route,
@@ -30,7 +38,11 @@ from .rocking import (
 )
 from .stability import STABILITY_ALGORITHM_LABEL, analyze_pose_stability
 from .step_verification import StepSupportUnavailable, verify_step_symmetry
-from .symmetry import detect_rotational_symmetry, reduce_catalog_by_symmetry
+from .symmetry import (
+    PoseEquivalenceClass,
+    detect_rotational_symmetry,
+    reduce_catalog_by_symmetry,
+)
 from .visualization import render_pose_sheets
 
 
@@ -70,12 +82,44 @@ def _build_parser() -> argparse.ArgumentParser:
     stability_parser.add_argument("--onset-alpha", type=float, default=45.0)
     stability_parser.add_argument("--onset-beta", type=float, default=15.0)
     stability_parser.add_argument("--mu-samples", type=int, default=11)
+    stability_parser.add_argument(
+        "--friction-policy",
+        choices=("range", "zero"),
+        default="zero",
+        help=(
+            "'zero' (default) evaluates nominal mu=0 equilibrium only; "
+            "'range' additionally requires stability through the inferred "
+            "static-friction range."
+        ),
+    )
+    stability_parser.add_argument(
+        "--exhaustive-friction-diagnostics",
+        action="store_true",
+        help=(
+            "Evaluate every pose at every friction sample, including rejected "
+            "and friction-dependent diagnostics. Large finely tessellated "
+            "catalogs otherwise use the exact quasistatic-only fast path."
+        ),
+    )
     stability_parser.add_argument("--symmetry-tolerance-mm", type=float)
     stability_parser.add_argument("--json", action="store_true", dest="as_json")
     stability_parser.add_argument(
         "--render-output-dir",
         type=Path,
         help="Optionally render only poses stable at every sampled mu value.",
+    )
+    stability_parser.add_argument(
+        "--pose-ranking", choices=("rocking", "csa"), default="rocking"
+    )
+    stability_parser.add_argument(
+        "--csa-cap-half-angle-deg",
+        type=float,
+        default=DEFAULT_CSA_CAP_HALF_ANGLE_DEG,
+    )
+    stability_parser.add_argument(
+        "--csa-direction-samples",
+        type=int,
+        default=DEFAULT_CSA_DIRECTION_SAMPLES,
     )
 
     symmetry_parser = subparsers.add_parser(
@@ -100,6 +144,15 @@ def _build_parser() -> argparse.ArgumentParser:
     disturbance_parser.add_argument("--onset-alpha", type=float, default=45.0)
     disturbance_parser.add_argument("--onset-beta", type=float, default=15.0)
     disturbance_parser.add_argument("--mu-samples", type=int, default=11)
+    disturbance_parser.add_argument(
+        "--friction-policy",
+        choices=("range", "zero"),
+        default="zero",
+        help=(
+            "Select nominal input poses using zero-friction equilibrium "
+            "(default) or the inferred static-friction range."
+        ),
+    )
     disturbance_parser.add_argument("--minimum-braking-g", type=float, default=0.10)
     disturbance_parser.add_argument(
         "--minimum-torque-normalized", type=float, default=0.02
@@ -123,6 +176,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--contact-displacement-tolerance-mm", type=float, default=0.5
     )
     disturbance_parser.add_argument("--render-output-dir", type=Path)
+    disturbance_parser.add_argument(
+        "--pose-ranking", choices=("rocking", "csa"), default="rocking"
+    )
+    disturbance_parser.add_argument(
+        "--csa-cap-half-angle-deg",
+        type=float,
+        default=DEFAULT_CSA_CAP_HALF_ANGLE_DEG,
+    )
+    disturbance_parser.add_argument(
+        "--csa-direction-samples",
+        type=int,
+        default=DEFAULT_CSA_DIRECTION_SAMPLES,
+    )
     disturbance_parser.add_argument("--json", action="store_true", dest="as_json")
 
     roadmap_parser = subparsers.add_parser(
@@ -135,7 +201,28 @@ def _build_parser() -> argparse.ArgumentParser:
     roadmap_parser.add_argument("--beta", type=float, default=20.0)
     roadmap_parser.add_argument("--onset-alpha", type=float, default=45.0)
     roadmap_parser.add_argument("--onset-beta", type=float, default=15.0)
-    roadmap_parser.add_argument("--symmetry-tolerance-mm", type=float, default=0.5)
+    roadmap_parser.add_argument(
+        "--friction-policy",
+        choices=("range", "zero"),
+        default="zero",
+        help=(
+            "Select roadmap input poses using nominal mu=0 equilibrium only "
+            "(default) or the full inferred friction range."
+        ),
+    )
+    roadmap_parser.add_argument(
+        "--symmetry-tolerance-mm",
+        type=float,
+        default=DEFAULT_ROADMAP_SYMMETRY_TOLERANCE_MM,
+        help=(
+            "Maximum STL mapping error for rotational symmetry; "
+            f"default: {DEFAULT_ROADMAP_SYMMETRY_TOLERANCE_MM:g} mm."
+        ),
+    )
+    roadmap_parser.add_argument(
+        "--expected-symmetry",
+        help="Fail instead of exporting when the detected symbol differs, e.g. C3.",
+    )
     roadmap_parser.add_argument("--axis-tolerance-deg", type=float, default=1.0)
     roadmap_parser.add_argument(
         "--surface-displacement-tolerance-mm", type=float, default=0.5
@@ -145,6 +232,31 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     roadmap_parser.add_argument(
         "--minimum-face-face-braking-g", type=float, default=0.10
+    )
+    roadmap_parser.add_argument(
+        "--pose-ranking", choices=("rocking", "csa"), default="rocking"
+    )
+    roadmap_parser.add_argument(
+        "--robustness-method", choices=("rocking", "csa"), default="rocking"
+    )
+    roadmap_parser.add_argument(
+        "--minimum-csa-score",
+        type=float,
+        default=DEFAULT_CSA_ROBUST_THRESHOLD,
+        help=(
+            "Provisional CWSA robust cutoff in 0..1; used only with "
+            "--robustness-method csa."
+        ),
+    )
+    roadmap_parser.add_argument(
+        "--csa-cap-half-angle-deg",
+        type=float,
+        default=DEFAULT_CSA_CAP_HALF_ANGLE_DEG,
+    )
+    roadmap_parser.add_argument(
+        "--csa-direction-samples",
+        type=int,
+        default=DEFAULT_CSA_DIRECTION_SAMPLES,
     )
     roadmap_parser.add_argument(
         "--opposite-x-min-height-mm",
@@ -168,6 +280,25 @@ def _build_parser() -> argparse.ArgumentParser:
     route_parser.add_argument("--max-actions", type=int, default=4)
     route_parser.add_argument("--output", type=Path)
     return parser
+
+
+def _format_pose_plot_metrics(
+    *,
+    rocking_barrier_mm: float,
+    csa_stability_index: float | None,
+    show_csa: bool,
+) -> str:
+    """Format the stability metrics shown beneath a pose number."""
+
+    lines: list[str] = []
+    if show_csa:
+        lines.append(
+            f"CWSA stability index: {csa_stability_index:.3f}"
+            if csa_stability_index is not None
+            else "CWSA stability index: n/a (rolling contact)"
+        )
+    lines.append(f"Rocking barrier: {rocking_barrier_mm:.3f} mm")
+    return "".join(f"\n{line}" for line in lines)
 
 
 def _inspect(args: argparse.Namespace) -> int:
@@ -263,6 +394,19 @@ def _render(args: argparse.Namespace) -> int:
 
 def _stability(args: argparse.Namespace) -> int:
     catalog = build_pose_catalog(args.mesh)
+    quasistatic_only = (
+        len(catalog.poses) >= 1000
+        and not args.exhaustive_friction_diagnostics
+    )
+    if quasistatic_only and not args.as_json:
+        print(
+            f"Large catalog ({len(catalog.poses)} poses): using the "
+            "zero-friction quasistatic prefilter."
+        )
+        print(
+            "Use --exhaustive-friction-diagnostics only when rejected and "
+            "friction-dependent pose classifications are required."
+        )
     analysis = analyze_pose_stability(
         args.mesh,
         alpha_deg=args.alpha,
@@ -271,6 +415,8 @@ def _stability(args: argparse.Namespace) -> int:
         onset_beta_deg=args.onset_beta,
         mu_samples=args.mu_samples,
         catalog=catalog,
+        quasistatic_only=quasistatic_only,
+        friction_policy=args.friction_policy,
     )
     detected_symmetry = detect_rotational_symmetry(
         args.mesh, tolerance_mm=args.symmetry_tolerance_mm
@@ -307,26 +453,115 @@ def _stability(args: argparse.Namespace) -> int:
             symmetry_policy = "not_merged_without_exact_step_confirmation"
     reduced = reduce_catalog_by_symmetry(catalog, symmetry)
     stable_ids = set(analysis.stable_pose_ids)
+    rocking = analyze_rocking_barriers(
+        args.mesh,
+        pose_ids=analysis.stable_pose_ids,
+        alpha_deg=args.alpha,
+        beta_deg=args.beta,
+        catalog=catalog,
+    )
+    rocking_by_pose_id = {value.pose_id: value for value in rocking.barriers}
+    csa = (
+        analyze_contact_wrench_solid_angle(
+            args.mesh,
+            pose_ids=analysis.stable_pose_ids,
+            alpha_deg=args.alpha,
+            beta_deg=args.beta,
+            onset_alpha_deg=args.onset_alpha,
+            onset_beta_deg=args.onset_beta,
+            mu_samples=args.mu_samples,
+            cap_half_angle_deg=args.csa_cap_half_angle_deg,
+            direction_samples=args.csa_direction_samples,
+            catalog=catalog,
+        )
+        if args.pose_ranking == "csa"
+        else None
+    )
+    csa_by_pose_id = (
+        {value.pose_id: value for value in csa.poses} if csa is not None else {}
+    )
+
+    def class_ranking_key(
+        value: PoseEquivalenceClass,
+    ) -> tuple[float | bool | int, ...]:
+        pose_ids = stable_ids.intersection(value.pose_ids)
+        if args.pose_ranking == "csa":
+            class_values = tuple(csa_by_pose_id[pose_id] for pose_id in pose_ids)
+            applicable = all(item.applicable for item in class_values)
+            score = min(item.score for item in class_values) if applicable else -1.0
+            return (
+                not applicable,
+                -round(score, 6),
+                -min(
+                    rocking_by_pose_id[pose_id].barrier_height_mm
+                    for pose_id in pose_ids
+                ),
+                value.representative_pose_id,
+            )
+        return (
+            -min(
+                rocking_by_pose_id[pose_id].barrier_height_mm
+                for pose_id in pose_ids
+            ),
+            value.representative_pose_id,
+        )
+
+    ranked_stable_classes = tuple(
+        sorted(
+            (
+                value
+                for value in reduced.classes
+                if stable_ids.intersection(value.pose_ids)
+            ),
+            key=class_ranking_key,
+        )
+    )
     stable_class_representatives = tuple(
         min(stable_ids.intersection(value.pose_ids))
-        for value in reduced.classes
-        if stable_ids.intersection(value.pose_ids)
+        for value in ranked_stable_classes
     )
     stability_by_pose_id = {value.pose_id: value for value in analysis.poses}
     stable_pose_labels = {}
-    for value in reduced.classes:
+    ranked_class_payloads = []
+    for pose_number, value in enumerate(ranked_stable_classes):
         stable_class_ids = stable_ids.intersection(value.pose_ids)
-        if not stable_class_ids:
-            continue
         representative = min(stable_class_ids)
         minimum_margin = min(
             stability_by_pose_id[pose_id].minimum_pressure_margin
             for pose_id in stable_class_ids
         )
+        minimum_barrier = min(
+            rocking_by_pose_id[pose_id].barrier_height_mm
+            for pose_id in stable_class_ids
+        )
+        class_csa_values = tuple(
+            csa_by_pose_id[pose_id]
+            for pose_id in stable_class_ids
+            if pose_id in csa_by_pose_id
+        )
+        minimum_csa = (
+            min(item.score for item in class_csa_values)
+            if class_csa_values and all(item.applicable for item in class_csa_values)
+            else None
+        )
+        ranking_label = _format_pose_plot_metrics(
+            rocking_barrier_mm=minimum_barrier,
+            csa_stability_index=minimum_csa,
+            show_csa=args.pose_ranking == "csa",
+        )
         stable_pose_labels[representative] = (
-            "Klasse "
-            + "/".join(str(pose_id) for pose_id in value.pose_ids)
-            + f"\nmin. Druckreserve: {minimum_margin:.4f}"
+            f"Pose {pose_number}"
+            f"{ranking_label}"
+            f"\nContact load balance index: {minimum_margin:.3f}"
+        )
+        ranked_class_payloads.append(
+            {
+                "pose_number": pose_number,
+                "original_catalog_pose_ids": value.pose_ids,
+                "rocking_barrier_mm": minimum_barrier,
+                "csa_stability_index": minimum_csa,
+                "contact_load_balance_index": minimum_margin,
+            }
         )
     if args.render_output_dir is not None:
         part_name = args.mesh.stem
@@ -335,27 +570,43 @@ def _stability(args: argparse.Namespace) -> int:
             args.render_output_dir,
             pose_ids=stable_class_representatives,
             sheet_title=(
-                f"{part_name}: quasistatisch zulaessige Gleitlagen "
-                f"bei alpha={args.alpha:g} deg, "
+                f"{part_name}: quasi-statically admissible sliding poses "
+                f"at alpha={args.alpha:g} deg, "
                 f"beta={args.beta:g} deg\n"
-                f"Algorithmus: {STABILITY_ALGORITHM_LABEL}; "
-                "Wert = minimale Druckreserve ueber den abgetasteten Reibbereich"
+                f"Algorithm: {STABILITY_ALGORITHM_LABEL}; "
+                + (
+                    "friction criterion: mu=0 only; "
+                    if analysis.friction_policy == "zero"
+                    else "friction criterion: full sampled range; "
+                )
+                + (
+                    f"ranking: {CSA_ALGORITHM_LABEL}; "
+                    if args.pose_ranking == "csa"
+                    else "ranking: finite rocking barrier; "
+                )
+                + f"pose number = descending {args.pose_ranking} stability metric"
             ),
             filename_prefix=f"{part_name}_quasistatic",
             pose_labels=stable_pose_labels,
+            catalog=catalog,
         )
 
     if args.as_json:
-        print(json.dumps(analysis.to_dict(), indent=2, ensure_ascii=False))
+        result = analysis.to_dict()
+        result["pose_ranking_method"] = args.pose_ranking
+        result["csa"] = csa.to_dict() if csa is not None else None
+        result["ranked_physical_pose_classes"] = ranked_class_payloads
+        print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
 
     type_counts: dict[str, list[int]] = {}
+    for pose in catalog.poses:
+        key = f"{pose.floor_contact_type}-{pose.wall_contact_type}"
+        type_counts.setdefault(key, [0, 0])[1] += 1
     for result in analysis.poses:
-        key = f"{result.floor_contact_type}-{result.wall_contact_type}"
-        counts = type_counts.setdefault(key, [0, 0])
-        counts[1] += 1
         if result.stable_across_range:
-            counts[0] += 1
+            key = f"{result.floor_contact_type}-{result.wall_contact_type}"
+            type_counts.setdefault(key, [0, 0])[0] += 1
 
     estimate = analysis.friction_estimate
     print(f"Mesh: {analysis.source}")
@@ -363,30 +614,46 @@ def _stability(args: argparse.Namespace) -> int:
         "Chute angles: "
         f"alpha={analysis.alpha_deg:g} deg, beta={analysis.beta_deg:g} deg"
     )
-    print(
-        "Friction estimate from slide onset: "
-        f"mu_s={estimate.mu_static_estimate:.6f} "
-        f"(alpha={estimate.onset_alpha_deg:g} deg, beta={estimate.onset_beta_deg:g} deg)"
-    )
-    print(
-        f"Robust interval: 0 <= mu <= {estimate.mu_static_estimate:.6f} "
-        f"at {len(analysis.mu_values)} samples"
-    )
-    print(
-        f"Quasi-statically admissible at every sampled coefficient: "
-        f"{len(analysis.stable_pose_ids)}/{len(analysis.poses)}"
-    )
+    if analysis.friction_policy == "zero":
+        print("Friction policy: nominal zero-friction equilibrium only (mu=0)")
+        print(
+            "Quasi-statically admissible at mu=0: "
+            f"{len(analysis.stable_pose_ids)}/{analysis.input_pose_count}"
+        )
+    else:
+        print(
+            "Friction estimate from slide onset: "
+            f"mu_s={estimate.mu_static_estimate:.6f} "
+            f"(alpha={estimate.onset_alpha_deg:g} deg, "
+            f"beta={estimate.onset_beta_deg:g} deg)"
+        )
+        print(
+            f"Robust interval: 0 <= mu <= {estimate.mu_static_estimate:.6f} "
+            f"at {len(analysis.mu_values)} samples"
+        )
+        print(
+            f"Quasi-statically admissible at every sampled coefficient: "
+            f"{len(analysis.stable_pose_ids)}/{analysis.input_pose_count}"
+        )
     for contact_type, (stable_count, total_count) in sorted(type_counts.items()):
         print(f"  {contact_type}: {stable_count}/{total_count}")
     print(
         "Quasi-static pose IDs: "
         + ", ".join(str(value) for value in analysis.stable_pose_ids)
     )
-    print(
-        "Friction-dependent candidates: "
-        f"{len(analysis.friction_dependent_pose_ids)}; "
-        f"rejected at every sample: {len(analysis.rejected_pose_ids)}"
-    )
+    if analysis.friction_policy == "zero":
+        print("Friction-range classifications: not evaluated")
+    elif analysis.quasistatic_only:
+        print(
+            "Friction-dependent/rejected diagnostics: skipped by the "
+            "quasistatic-only fast path"
+        )
+    else:
+        print(
+            "Friction-dependent candidates: "
+            f"{len(analysis.friction_dependent_pose_ids)}; "
+            f"rejected at every sample: {len(analysis.rejected_pose_ids)}"
+        )
     print(
         f"Applied rotation symmetry: {symmetry.symbol} "
         f"(order {symmetry.order}, tolerance {symmetry.tolerance_mm:.6g} mm)"
@@ -399,8 +666,14 @@ def _stability(args: argparse.Namespace) -> int:
         )
     print(
         "Quasi-static pose classes after symmetry grouping: "
-        f"{len(stable_class_representatives)}"
+        f"{len(ranked_stable_classes)}"
     )
+    print(f"Pose ranking method: {args.pose_ranking}")
+    if csa is not None:
+        print(
+            f"CWSA cap: {csa.cap_half_angle_deg:g} deg; "
+            f"equal-area directions: {csa.direction_samples}"
+        )
     if args.render_output_dir is not None:
         print(f"Rendered quasi-static pose classes to: {args.render_output_dir.resolve()}")
     return 0
@@ -499,6 +772,8 @@ def _disturbance(args: argparse.Namespace) -> int:
             onset_beta_deg=args.onset_beta,
             mu_samples=args.mu_samples,
             catalog=catalog,
+            quasistatic_only=True,
+            friction_policy=args.friction_policy,
         )
         requested_pose_ids = nominal.stable_pose_ids
     analysis = analyze_disturbance_robustness(
@@ -533,6 +808,22 @@ def _disturbance(args: argparse.Namespace) -> int:
         minimum_barrier_height_mm=args.minimum_rocking_barrier_mm,
         minimum_face_face_braking_g=args.minimum_face_face_braking_g,
     )
+    csa = (
+        analyze_contact_wrench_solid_angle(
+            args.mesh,
+            pose_ids=requested_pose_ids,
+            alpha_deg=args.alpha,
+            beta_deg=args.beta,
+            onset_alpha_deg=args.onset_alpha,
+            onset_beta_deg=args.onset_beta,
+            mu_samples=args.mu_samples,
+            cap_half_angle_deg=args.csa_cap_half_angle_deg,
+            direction_samples=args.csa_direction_samples,
+            catalog=catalog,
+        )
+        if args.pose_ranking == "csa"
+        else None
+    )
     mesh = load_solid_mesh(args.mesh)
     vertices_centered = np.asarray(mesh.vertices, dtype=float) - np.asarray(
         mesh.center_mass, dtype=float
@@ -557,10 +848,51 @@ def _disturbance(args: argparse.Namespace) -> int:
     )
     capacities = {value.pose_id: value for value in analysis.capacities}
     barriers = {value.pose_id: value for value in rocking.barriers}
+    csa_by_pose_id = (
+        {value.pose_id: value for value in csa.poses} if csa is not None else {}
+    )
     accepted_ids = set(finite_filtered.accepted_pose_ids)
+
+    def class_ranking_key(
+        pose_class: PracticalPoseClass,
+    ) -> tuple[float | bool | int, ...]:
+        if args.pose_ranking == "csa":
+            class_values = tuple(
+                csa_by_pose_id[pose_id] for pose_id in pose_class.pose_ids
+            )
+            applicable = all(value.applicable for value in class_values)
+            score = min(value.score for value in class_values) if applicable else -1.0
+            return (
+                not all(pose_id in accepted_ids for pose_id in pose_class.pose_ids),
+                not applicable,
+                -round(score, 6),
+                -min(
+                    barriers[pose_id].barrier_height_mm
+                    for pose_id in pose_class.pose_ids
+                ),
+                pose_class.representative_pose_id,
+            )
+        return (
+            -min(
+                barriers[pose_id].barrier_height_mm
+                for pose_id in pose_class.pose_ids
+            ),
+            pose_class.representative_pose_id,
+        )
+
+    ranked_classes = tuple(
+        sorted(
+            clustering.classes,
+            key=class_ranking_key,
+        )
+    )
+    pose_number_by_class_id = {
+        pose_class.class_id: pose_number
+        for pose_number, pose_class in enumerate(ranked_classes)
+    }
     robust_classes = tuple(
         pose_class
-        for pose_class in clustering.classes
+        for pose_class in ranked_classes
         if all(pose_id in accepted_ids for pose_id in pose_class.pose_ids)
     )
     robust_representation_count = sum(
@@ -568,22 +900,41 @@ def _disturbance(args: argparse.Namespace) -> int:
     )
 
     if args.render_output_dir is not None:
-        labels = {
-            pose_class.representative_pose_id: (
-                "Klasse " + "/".join(str(value) for value in pose_class.pose_ids)
+        labels = {}
+        for pose_class in robust_classes:
+            label = f"Pose {pose_number_by_class_id[pose_class.class_id]}"
+            minimum_barrier = min(
+                barriers[value].barrier_height_mm
+                for value in pose_class.pose_ids
             )
-            for pose_class in robust_classes
-        }
+            minimum_csa = None
+            if args.pose_ranking == "csa":
+                class_values = tuple(
+                    csa_by_pose_id[pose_id] for pose_id in pose_class.pose_ids
+                )
+                minimum_csa = (
+                    min(value.score for value in class_values)
+                    if all(value.applicable for value in class_values)
+                    else None
+                )
+            label += _format_pose_plot_metrics(
+                rocking_barrier_mm=minimum_barrier,
+                csa_stability_index=minimum_csa,
+                show_csa=args.pose_ranking == "csa",
+            )
+            labels[pose_class.representative_pose_id] = label
         render_pose_sheets(
             args.mesh,
             args.render_output_dir,
             pose_ids=labels,
             sheet_title=(
-                f"{args.mesh.stem}: stoerfeste Gleitposen "
-                f"bei alpha={args.alpha:g} deg, beta={args.beta:g} deg"
+                f"{args.mesh.stem}: disturbance-robust sliding poses "
+                f"at alpha={args.alpha:g} deg, beta={args.beta:g} deg\n"
+                f"pose number = descending {args.pose_ranking} stability metric"
             ),
             filename_prefix=f"{args.mesh.stem}_disturbance_robust",
             pose_labels=labels,
+            catalog=catalog,
         )
 
     if args.as_json:
@@ -591,15 +942,48 @@ def _disturbance(args: argparse.Namespace) -> int:
         result["filter"] = filtered.to_dict()
         result["rocking"] = rocking.to_dict()
         result["finite_disturbance_filter"] = finite_filtered.to_dict()
+        result["pose_ranking_method"] = args.pose_ranking
+        result["csa"] = csa.to_dict() if csa is not None else None
         result["practical_clustering"] = clustering.to_dict()
         result["robust_practical_classes"] = [
-            pose_class.to_dict() for pose_class in robust_classes
+            {
+                "pose_number": pose_number_by_class_id[pose_class.class_id],
+                **pose_class.to_dict(),
+            }
+            for pose_class in robust_classes
+        ]
+        result["ranked_physical_pose_classes"] = [
+            {
+                "pose_number": pose_number_by_class_id[pose_class.class_id],
+                "original_catalog_pose_ids": pose_class.pose_ids,
+                "rocking_barrier_mm": min(
+                    barriers[value].barrier_height_mm
+                    for value in pose_class.pose_ids
+                ),
+                "csa_stability_index": (
+                    min(
+                        csa_by_pose_id[value].score
+                        for value in pose_class.pose_ids
+                    )
+                    if csa is not None
+                    and all(
+                        csa_by_pose_id[value].applicable
+                        for value in pose_class.pose_ids
+                    )
+                    else None
+                ),
+                "robust": all(
+                    pose_id in accepted_ids for pose_id in pose_class.pose_ids
+                ),
+            }
+            for pose_class in ranked_classes
         ]
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
 
     print(f"Mesh: {analysis.source}")
     print(f"Nominal input poses: {len(requested_pose_ids)}")
+    print(f"Pose ranking method: {args.pose_ranking}")
     print(
         "Finite disturbance thresholds: "
         f"rocking barrier >= {finite_filtered.minimum_barrier_height_mm:.6g} mm; "
@@ -614,8 +998,7 @@ def _disturbance(args: argparse.Namespace) -> int:
     for pose_class in robust_classes:
         member_capacities = [capacities[value] for value in pose_class.pose_ids]
         print(
-            "  "
-            + "/".join(str(value) for value in pose_class.pose_ids)
+            f"  Pose {pose_number_by_class_id[pose_class.class_id]}"
             + f": braking={min(value.critical_braking_g for value in member_capacities):.6f} g"
             + ", torque="
             + f"{min(value.critical_torque_normalized for value in member_capacities):.6f}"
@@ -643,7 +1026,22 @@ def _roadmap(args: argparse.Namespace) -> int:
         minimum_face_face_braking_g=args.minimum_face_face_braking_g,
         opposite_x_min_height_mm=args.opposite_x_min_height_mm,
         geometry_status=args.geometry_status,
+        pose_ranking_method=args.pose_ranking,
+        robustness_method=args.robustness_method,
+        minimum_csa_score=args.minimum_csa_score,
+        csa_cap_half_angle_deg=args.csa_cap_half_angle_deg,
+        csa_direction_samples=args.csa_direction_samples,
+        friction_policy=args.friction_policy,
     )
+    if (
+        args.expected_symmetry is not None
+        and result.symmetry_symbol.casefold() != args.expected_symmetry.casefold()
+    ):
+        raise ValueError(
+            "Expected rotational symmetry "
+            f"{args.expected_symmetry}, detected {result.symmetry_symbol} "
+            f"at {result.symmetry_tolerance_mm:g} mm tolerance."
+        )
     paths = export_pose_roadmap(result, args.output_dir)
     if args.as_json:
         print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
@@ -654,9 +1052,32 @@ def _roadmap(args: argparse.Namespace) -> int:
     passive_count = sum(edge.transition_kind == "passive_tip" for edge in result.edges)
     print(f"Mesh: {result.source}")
     print(
+        "Rotational symmetry: "
+        f"{result.symmetry_symbol} "
+        f"(STL tolerance {result.symmetry_tolerance_mm:g} mm)"
+    )
+    print(
         f"Roadmap nodes: {len(result.nodes)} "
         f"({robust_count} robust, {metastable_count} metastable)"
     )
+    print(
+        f"Pose ranking: {result.pose_ranking_method}; "
+        f"robustness classifier: {result.robustness_method}"
+    )
+    print(f"Quasistatic friction policy: {result.friction_policy}")
+    if result.robustness_method == "csa":
+        print(
+            f"CWSA cutoff: {result.minimum_csa_score:g} "
+            f"over a {result.csa_cap_half_angle_deg:g} deg cap "
+            f"({result.csa_direction_samples} equal-area directions)"
+        )
+        if result.csa_rocking_fallback_pose_ids:
+            print(
+                "Rocking fallback for continuous rolling catalog poses: "
+                + ", ".join(
+                    str(value) for value in result.csa_rocking_fallback_pose_ids
+                )
+            )
     print(
         f"Directed transitions: {actuated_count} actuated, "
         f"{passive_count} passive"

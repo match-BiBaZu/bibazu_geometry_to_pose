@@ -1,12 +1,14 @@
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
 
-from chute_pose import build_pose_catalog
+from chute_pose import build_pose_catalog, contacts
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DF1A_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Df1a.STL"
 KK1A_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Kk1a.STL"
+QK1A_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Qk1a.STL"
 
 
 def test_kk1a_continuous_symmetry_removes_faceted_circle_pose_duplicates() -> None:
@@ -14,7 +16,7 @@ def test_kk1a_continuous_symmetry_removes_faceted_circle_pose_duplicates() -> No
 
     assert catalog.continuous_symmetry_axis_part is not None
     assert catalog.continuous_symmetry_edge_edge_exception
-    assert len(catalog.support_faces) == 5
+    assert len(catalog.support_faces) == 4
     assert len(catalog.poses) == 12
     assert sum(pose.floor_contact_type == "face" for pose in catalog.poses) == 2
     assert sum(pose.wall_contact_type == "face" for pose in catalog.poses) == 2
@@ -24,11 +26,40 @@ def test_kk1a_continuous_symmetry_removes_faceted_circle_pose_duplicates() -> No
     ) == 8
 
 
+def test_qk1a_fine_mesh_catalog_uses_bounded_rotation_deduplication(
+    monkeypatch,
+) -> None:
+    comparison_count = 0
+    original_rotation_distance = contacts._rotation_distance
+
+    def counted_rotation_distance(first, second) -> float:
+        nonlocal comparison_count
+        comparison_count += 1
+        return original_rotation_distance(first, second)
+
+    monkeypatch.setattr(contacts, "_rotation_distance", counted_rotation_distance)
+
+    catalog = build_pose_catalog(QK1A_STL)
+
+    assert catalog.continuous_symmetry_axis_part is None
+    assert len(catalog.support_faces) == 166
+    assert len(catalog.poses) == 7_728
+    assert Counter(
+        (pose.floor_contact_type, pose.wall_contact_type)
+        for pose in catalog.poses
+    ) == {
+        ("edge", "face"): 3_812,
+        ("face", "edge"): 3_812,
+        ("face", "face"): 104,
+    }
+    assert comparison_count < 50_000
+
+
 def test_df1a_catalog_contains_all_convex_support_faces() -> None:
     catalog = build_pose_catalog(DF1A_STL)
 
-    assert len(catalog.support_faces) == 9
-    assert len(catalog.poses) == 108
+    assert len(catalog.support_faces) == 8
+    assert len(catalog.poses) == 90
     represented_faces = {
         face_id
         for pose in catalog.poses
@@ -40,7 +71,7 @@ def test_df1a_catalog_contains_all_convex_support_faces() -> None:
     for pose in catalog.poses:
         key = (pose.floor_contact_dimension, pose.wall_contact_dimension)
         contact_type_counts[key] = contact_type_counts.get(key, 0) + 1
-    assert contact_type_counts == {(1, 2): 48, (2, 1): 48, (2, 2): 12}
+    assert contact_type_counts == {(1, 2): 39, (2, 1): 39, (2, 2): 12}
 
 
 def test_df1a_catalog_has_only_non_point_isolated_contacts() -> None:

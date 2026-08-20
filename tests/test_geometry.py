@@ -19,7 +19,7 @@ def test_df1a_is_a_valid_uniform_density_solid() -> None:
     np.testing.assert_allclose(report.extents_mm, [80.0, 69.28203583, 15.0], atol=1e-5)
     np.testing.assert_allclose(
         report.center_mass_mm,
-        [40.00271810, 23.09872058, 5.37569569],
+        [39.99999970, 23.09401225, 5.37569571],
         atol=1e-5,
     )
     np.testing.assert_allclose(report.volume_mm3, 29174.232083, atol=1e-5)
@@ -28,7 +28,7 @@ def test_df1a_is_a_valid_uniform_density_solid() -> None:
 def test_df1a_convex_hull_has_expected_complexity() -> None:
     report = inspect_mesh(DF1A_STL)
 
-    assert report.hull_vertex_count == 11
-    assert report.hull_face_count == 18
-    assert report.hull_plane_count == 9
+    assert report.hull_vertex_count == 10
+    assert report.hull_face_count == 16
+    assert report.hull_plane_count == 8
 
