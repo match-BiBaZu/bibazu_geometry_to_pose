@@ -28,6 +28,24 @@ def test_rocking_remains_the_default_ranking_and_classifier() -> None:
     assert args.minimum_csa_score == DEFAULT_CSA_ROBUST_THRESHOLD
     assert args.csa_cap_half_angle_deg == DEFAULT_CSA_CAP_HALF_ANGLE_DEG
     assert args.csa_direction_samples == DEFAULT_CSA_DIRECTION_SAMPLES
+    assert args.minimum_braking_g == 0.10
+
+
+def test_roadmap_accepts_the_legacy_face_face_braking_flag() -> None:
+    parser = _build_parser()
+
+    args = parser.parse_args(
+        [
+            "roadmap",
+            "part.stl",
+            "--output-dir",
+            "roadmap",
+            "--minimum-face-face-braking-g",
+            "0.25",
+        ]
+    )
+
+    assert args.minimum_braking_g == 0.25
 
 
 def test_csa_ranking_and_classification_can_be_selected_independently() -> None:

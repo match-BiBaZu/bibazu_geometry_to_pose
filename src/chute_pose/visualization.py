@@ -108,10 +108,10 @@ def _draw_contact_set(
             points[:, 1],
             points[:, 2],
             color=color,
-            edgecolors="white",
-            linewidths=0.8,
+            edgecolors="none",
+            linewidths=0.0,
             marker=marker,
-            s=58,
+            s=34,
             depthshade=False,
             zorder=20,
         )
@@ -125,7 +125,7 @@ def _draw_contact_set(
             segment[:, 1],
             segment[:, 2],
             color=color,
-            linewidth=3.2,
+            linewidth=2.0,
             solid_capstyle="round",
             zorder=19,
         )

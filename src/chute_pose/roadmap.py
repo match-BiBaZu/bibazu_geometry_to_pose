@@ -987,8 +987,8 @@ def build_pose_roadmap(
     symmetry_tolerance_mm: float | None = None,
     angular_tolerance_deg: float = 1.0,
     surface_displacement_tolerance_mm: float = 0.5,
-    robust_barrier_threshold_mm: float = 0.20,
-    minimum_face_face_braking_g: float = 0.10,
+    robust_barrier_threshold_mm: float = 0.73,
+    minimum_braking_g: float = 0.10,
     opposite_x_min_height_mm: float = 25.0,
     geometry_status: str = "provisional",
     pose_ranking_method: PoseRankingMethod = "rocking",
@@ -1055,7 +1055,7 @@ def build_pose_roadmap(
         disturbance,
         catalog,
         minimum_barrier_height_mm=robust_barrier_threshold_mm,
-        minimum_face_face_braking_g=minimum_face_face_braking_g,
+        minimum_braking_g=minimum_braking_g,
     )
     rocking_robust_pose_ids = set(robust_filter.accepted_pose_ids).intersection(
         nominal_ids
@@ -1086,18 +1086,11 @@ def build_pose_roadmap(
         disturbance_by_pose_id = {
             value.pose_id: value for value in disturbance.capacities
         }
-        poses_by_id = {pose.pose_id: pose for pose in catalog.poses}
         robust_pose_ids = set()
         for pose_id in csa_filter.accepted_pose_ids:
-            pose = poses_by_id[pose_id]
-            face_face = (
-                pose.floor_contact_type == "face"
-                and pose.wall_contact_type == "face"
-            )
             if (
-                not face_face
-                or disturbance_by_pose_id[pose_id].critical_braking_g
-                >= minimum_face_face_braking_g
+                disturbance_by_pose_id[pose_id].critical_braking_g
+                >= minimum_braking_g
             ):
                 robust_pose_ids.add(pose_id)
         # A fixed-contact solid-angle model cannot represent a circular part
@@ -2019,8 +2012,27 @@ def _separate_roadmap_angle_labels(
 def render_pose_roadmap(
     roadmap: PoseRoadmap,
     output_stem: str | Path,
+    *,
+    stable_only: bool = False,
 ) -> tuple[Path, Path]:
-    """Render robust nodes prominently and metastable nodes as quiet waypoints."""
+    """Render a full roadmap or only its robust nodes and transitions."""
+
+    if stable_only:
+        stable_node_ids = {
+            node.node_id for node in roadmap.nodes if node.kind == "robust"
+        }
+        roadmap = replace(
+            roadmap,
+            nodes=tuple(
+                node for node in roadmap.nodes if node.node_id in stable_node_ids
+            ),
+            edges=tuple(
+                edge
+                for edge in roadmap.edges
+                if edge.source in stable_node_ids and edge.target in stable_node_ids
+            ),
+            unresolved_metastable_node_ids=(),
+        )
 
     stem = Path(output_stem).expanduser().resolve()
     stem.parent.mkdir(parents=True, exist_ok=True)
@@ -2162,7 +2174,7 @@ def render_pose_roadmap(
         axis.annotate(
             str(node.node_id),
             positions[node.node_id],
-            xytext=(0, 69 if robust_node else 55),
+            xytext=(0, 56 if robust_node else 44),
             textcoords="offset points",
             ha="center",
             va="bottom",
@@ -2184,7 +2196,7 @@ def render_pose_roadmap(
         axis.annotate(
             metric_label,
             positions[node.node_id],
-            xytext=(0, -69 if robust_node else -55),
+            xytext=(0, -56 if robust_node else -44),
             textcoords="offset points",
             ha="center",
             va="top",
@@ -2194,11 +2206,17 @@ def render_pose_roadmap(
             zorder=9,
         )
     _separate_roadmap_angle_labels(figure, angle_annotations)
-    title = (
-        f"{Path(roadmap.source).stem}: pose roadmap — "
-        f"{sum(node.kind == 'robust' for node in roadmap.nodes)} robust, "
-        f"{sum(node.kind == 'metastable' for node in roadmap.nodes)} metastable"
-    )
+    if stable_only:
+        title = (
+            f"{Path(roadmap.source).stem}: stable pose roadmap — "
+            f"{len(robust)} stable poses, {len(roadmap.edges)} stable transitions"
+        )
+    else:
+        title = (
+            f"{Path(roadmap.source).stem}: pose roadmap — "
+            f"{sum(node.kind == 'robust' for node in roadmap.nodes)} robust, "
+            f"{sum(node.kind == 'metastable' for node in roadmap.nodes)} metastable"
+        )
     axis.set_title(title, fontsize=16, pad=18)
     legend_items = [
         Line2D([0], [0], color=_ROADMAP_AXIS_COLORS["x"], lw=2.4, label="X rotation"),
@@ -2210,18 +2228,21 @@ def render_pose_roadmap(
             color="#111827",
             lw=2.4,
             ls="solid",
-            label="robust",
-        ),
-        Line2D(
-            [0],
-            [0],
-            color="#6b7280",
-            lw=0.9,
-            ls="dashed",
-            alpha=0.45,
-            label="metastable",
+            label="stable" if stable_only else "robust",
         ),
     ]
+    if not stable_only:
+        legend_items.append(
+            Line2D(
+                [0],
+                [0],
+                color="#6b7280",
+                lw=0.9,
+                ls="dashed",
+                alpha=0.45,
+                label="metastable",
+            )
+        )
     legend = axis.legend(
         handles=legend_items,
         loc="upper left",
@@ -2270,7 +2291,7 @@ def render_pose_roadmap(
 
 def export_pose_roadmap(
     roadmap: PoseRoadmap, output_dir: str | Path
-) -> tuple[Path, Path, Path, Path, Path, Path]:
+) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
     destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     stem = Path(roadmap.source).stem
@@ -2283,6 +2304,11 @@ def export_pose_roadmap(
     svg_path, png_path = render_pose_roadmap(
         roadmap, destination / f"{stem}_roadmap"
     )
+    stable_svg_path, stable_png_path = render_pose_roadmap(
+        roadmap,
+        destination / f"{stem}_roadmap_stable",
+        stable_only=True,
+    )
     return (
         json_path,
         yaml_path,
@@ -2290,4 +2316,6 @@ def export_pose_roadmap(
         graphml_path,
         svg_path,
         png_path,
+        stable_svg_path,
+        stable_png_path,
     )

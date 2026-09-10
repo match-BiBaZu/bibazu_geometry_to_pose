@@ -63,10 +63,10 @@ class RockingAnalysis:
 
 @dataclass(frozen=True, slots=True)
 class FiniteDisturbanceFilterResult:
-    """Combined finite-rocking and face-face braking decision."""
+    """Combined finite-rocking and braking-reserve decision."""
 
     minimum_barrier_height_mm: float
-    minimum_face_face_braking_g: float
+    minimum_braking_g: float
     accepted_pose_ids: tuple[int, ...]
     rejected_pose_ids: tuple[int, ...]
 
@@ -265,24 +265,20 @@ def filter_finite_disturbance_robustness(
     disturbance: DisturbanceAnalysis,
     catalog: PoseCatalog,
     *,
-    minimum_barrier_height_mm: float = 0.20,
-    minimum_face_face_braking_g: float = 0.10,
+    minimum_barrier_height_mm: float = 0.73,
+    minimum_braking_g: float = 0.10,
 ) -> FiniteDisturbanceFilterResult:
-    """Filter poses using two physically distinct overturning mechanisms.
+    """Require a calibrated rocking barrier and braking reserve for every pose.
 
-    Every pose must have a finite rocking barrier.  A pure face-face pose must
-    additionally retain equilibrium under a braking force, because it cannot
-    harmlessly rock through the early unloading of an edge contact.  For poses
-    containing an edge, the finite barrier supersedes the overly conservative
-    first-unloading force/torque capacities.
-
-    The 0.20 mm default is a provisional calibration against Df1a, Dl1a and
-    Qk1a and should later be checked against more measured parts.
+    A finite rocking barrier is necessary but not sufficient: an edge contact
+    can still unload immediately under braking. Applying the same braking limit
+    to face-face and edge-containing poses avoids classifying a shallow edge
+    landing as robust merely because its geometric rocking path rises briefly.
     """
 
     for name, value in (
         ("minimum_barrier_height_mm", minimum_barrier_height_mm),
-        ("minimum_face_face_braking_g", minimum_face_face_braking_g),
+        ("minimum_braking_g", minimum_braking_g),
     ):
         if not math.isfinite(value) or value < 0.0:
             raise ValueError(f"{name} must be finite and non-negative.")
@@ -299,25 +295,17 @@ def filter_finite_disturbance_robustness(
 
     accepted: list[int] = []
     for pose_id in pose_ids:
-        pose = poses[pose_id]
         has_barrier = (
             barriers[pose_id].barrier_height_mm >= minimum_barrier_height_mm
         )
-        is_face_face = (
-            pose.floor_contact_type == "face"
-            and pose.wall_contact_type == "face"
-        )
-        survives_face_braking = (
-            not is_face_face
-            or capacities[pose_id].critical_braking_g
-            >= minimum_face_face_braking_g
-        )
-        if has_barrier and survives_face_braking:
+        capacity = capacities[pose_id]
+        has_braking_reserve = capacity.critical_braking_g >= minimum_braking_g
+        if has_barrier and has_braking_reserve:
             accepted.append(pose_id)
     accepted_set = set(accepted)
     return FiniteDisturbanceFilterResult(
         minimum_barrier_height_mm=minimum_barrier_height_mm,
-        minimum_face_face_braking_g=minimum_face_face_braking_g,
+        minimum_braking_g=minimum_braking_g,
         accepted_pose_ids=tuple(accepted),
         rejected_pose_ids=tuple(
             pose_id for pose_id in pose_ids if pose_id not in accepted_set

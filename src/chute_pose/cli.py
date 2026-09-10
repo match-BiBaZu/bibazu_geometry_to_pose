@@ -165,9 +165,6 @@ def _build_parser() -> argparse.ArgumentParser:
     disturbance_parser.add_argument(
         "--minimum-rocking-barrier-mm", type=float, default=0.20
     )
-    disturbance_parser.add_argument(
-        "--minimum-face-face-braking-g", type=float, default=0.10
-    )
     disturbance_parser.add_argument("--symmetry-tolerance-mm", type=float)
     disturbance_parser.add_argument(
         "--contact-angle-tolerance-deg", type=float, default=1.0
@@ -228,10 +225,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--surface-displacement-tolerance-mm", type=float, default=0.5
     )
     roadmap_parser.add_argument(
-        "--minimum-rocking-barrier-mm", type=float, default=0.20
+        "--minimum-rocking-barrier-mm", type=float, default=0.73
     )
     roadmap_parser.add_argument(
-        "--minimum-face-face-braking-g", type=float, default=0.10
+        "--minimum-braking-g",
+        "--minimum-face-face-braking-g",
+        dest="minimum_braking_g",
+        type=float,
+        default=0.10,
+        help="Minimum braking reserve required for every roadmap pose.",
     )
     roadmap_parser.add_argument(
         "--pose-ranking", choices=("rocking", "csa"), default="rocking"
@@ -262,7 +264,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--opposite-x-min-height-mm",
         type=float,
         default=25.0,
-        help="Minimum intrinsic main-face height for +X on floor or -X on wall.",
+        help=(
+            "Minimum available broad main-face support span for +X on floor "
+            "or -X on wall."
+        ),
     )
     roadmap_parser.add_argument(
         "--geometry-status",
@@ -806,7 +811,7 @@ def _disturbance(args: argparse.Namespace) -> int:
         analysis,
         catalog,
         minimum_barrier_height_mm=args.minimum_rocking_barrier_mm,
-        minimum_face_face_braking_g=args.minimum_face_face_braking_g,
+        minimum_braking_g=args.minimum_braking_g,
     )
     csa = (
         analyze_contact_wrench_solid_angle(
@@ -987,8 +992,7 @@ def _disturbance(args: argparse.Namespace) -> int:
     print(
         "Finite disturbance thresholds: "
         f"rocking barrier >= {finite_filtered.minimum_barrier_height_mm:.6g} mm; "
-        "for face-face additionally braking >= "
-        f"{finite_filtered.minimum_face_face_braking_g:.6g} g"
+        f"braking >= {finite_filtered.minimum_braking_g:.6g} g"
     )
     print(
         f"Disturbance-robust representations in complete classes: "
@@ -1023,7 +1027,7 @@ def _roadmap(args: argparse.Namespace) -> int:
             args.surface_displacement_tolerance_mm
         ),
         robust_barrier_threshold_mm=args.minimum_rocking_barrier_mm,
-        minimum_face_face_braking_g=args.minimum_face_face_braking_g,
+        minimum_braking_g=args.minimum_braking_g,
         opposite_x_min_height_mm=args.opposite_x_min_height_mm,
         geometry_status=args.geometry_status,
         pose_ranking_method=args.pose_ranking,
@@ -1090,11 +1094,14 @@ def _roadmap(args: argparse.Namespace) -> int:
     print(
         "Opposite X directions: "
         + (
-            "enabled"
-            if result.main_face_min_span_mm > result.opposite_x_min_height_mm
-            else "disabled"
+            "available"
+            if {
+                "floor_main_pos_x",
+                "wall_main_neg_x",
+            }.intersection(edge.actuation for edge in result.edges)
+            else "not available for this roadmap"
         )
-        + f" (threshold > {result.opposite_x_min_height_mm:.3f} mm)"
+        + f" (support threshold > {result.opposite_x_min_height_mm:.3f} mm)"
     )
     if result.unresolved_metastable_node_ids:
         print(

@@ -36,6 +36,8 @@ DF1A_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Df1a.STL"
 DL1A_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Dl1a.STL"
 KK1A_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Kk1a.STL"
 QL1I_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Ql1i.STL"
+DF4A_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Df4a.STL"
+RL4I_STL = REPOSITORY_ROOT / "Werkstücke_STL_grob" / "Rl4i.STL"
 
 
 def _node(node_id: int, kind: str = "robust") -> RoadmapNode:
@@ -143,6 +145,14 @@ def test_df1a_roadmap_keeps_four_robust_and_four_metastable_classes(
     assert png_path.stat().st_size > 10_000
     rendered_pixels = imread(png_path)
     assert rendered_pixels.shape[1] / rendered_pixels.shape[0] == pytest.approx(1.5)
+    stable_svg_path, stable_png_path = render_pose_roadmap(
+        roadmap,
+        tmp_path / "Df1a_roadmap_stable",
+        stable_only=True,
+    )
+    assert stable_svg_path.stat().st_size > 5_000
+    assert stable_png_path.stat().st_size > 5_000
+    assert "stable pose roadmap" in stable_svg_path.read_text(encoding="utf-8")
     json_path = save_roadmap_json(roadmap, tmp_path / "Df1a_roadmap.json")
     json_payload = json.loads(json_path.read_text(encoding="utf-8"))
     assert json_payload["nodes"][0]["node_id"] == 0
@@ -407,10 +417,29 @@ def test_ql1i_main_face_is_too_narrow_for_opposite_x_actions() -> None:
 
     assert len(roadmap.main_face_ids) == 4
     assert roadmap.main_face_min_span_mm == pytest.approx(20.0)
+    assert roadmap.opposite_x_min_height_mm == 25.0
     assert not {
         "floor_main_pos_x",
         "wall_main_neg_x",
     }.intersection(edge.actuation for edge in roadmap.edges)
+
+
+def test_rl4i_blocks_narrow_opposite_x_support_and_rejects_weak_edge_poses() -> None:
+    roadmap = build_pose_roadmap(RL4I_STL, geometry_status="verified")
+
+    assert roadmap.main_face_min_span_mm <= roadmap.opposite_x_min_height_mm
+    assert not {
+        "floor_main_pos_x",
+        "wall_main_neg_x",
+    }.intersection(edge.actuation for edge in roadmap.edges)
+    assert all(roadmap.node(node_id).kind == "metastable" for node_id in (12, 13, 14, 15))
+
+
+def test_df4a_uses_disturbance_reserves_in_addition_to_rocking_barrier() -> None:
+    roadmap = build_pose_roadmap(DF4A_STL, geometry_status="verified")
+
+    assert roadmap.node(10).kind == "robust"
+    assert all(roadmap.node(node_id).kind == "metastable" for node_id in (11, 12, 13))
 
 
 def test_kk1a_continuous_symmetry_keeps_dominant_mantle_poses() -> None:

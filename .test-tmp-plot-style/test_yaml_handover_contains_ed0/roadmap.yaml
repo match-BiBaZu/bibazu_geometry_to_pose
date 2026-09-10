@@ -1,0 +1,122 @@
+---
+format: "bibazu_pose_roadmap_handover"
+schema_version: 1
+part:
+  name: "synthetic"
+  mesh_source: "synthetic.stl"
+  cad_status: "verified"
+chute:
+  coordinate_system: "right_handed"
+  x: "downhill"
+  y: "away_from_wall"
+  z: "away_from_floor"
+  alpha_deg: 45.0
+  beta_deg: 20.0
+classification:
+  symmetry: "C1"
+  friction_policy: "zero"
+  pose_ranking_method: "rocking"
+  robustness_method: "rocking"
+  robust_pose_ids: [1, 2, 3]
+  metastable_pose_ids: []
+  main_face_ids: [0]
+  main_face_min_span_mm: 1.0
+  opposite_x_min_height_mm: 25.0
+  robust_barrier_threshold_mm: 0.2
+  minimum_csa_score: 0.65
+  csa_cap_half_angle_deg: 5.0
+  csa_direction_samples: 72
+  csa_rocking_fallback_catalog_pose_ids: []
+  unresolved_metastable_pose_ids: []
+poses:
+  -
+    id: 1
+    original_catalog_pose_id: 1
+    equivalent_catalog_pose_ids: [1]
+    stability: "robust"
+    planner_role: "stable_target"
+    orientation_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+    contacts:
+      floor: "face"
+      wall: "face"
+      main_face_on_floor: false
+      main_face_on_wall: false
+    rocking_barrier_mm: 1.0
+    csa_stability_index: null
+    csa_feasible_fraction: null
+    csa_feasible_solid_angle_sr: null
+    csa_angular_clearance_deg: null
+    csa_applicable: null
+    cad_status: "verified"
+  -
+    id: 2
+    original_catalog_pose_id: 2
+    equivalent_catalog_pose_ids: [2]
+    stability: "robust"
+    planner_role: "stable_target"
+    orientation_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+    contacts:
+      floor: "face"
+      wall: "face"
+      main_face_on_floor: false
+      main_face_on_wall: false
+    rocking_barrier_mm: 1.0
+    csa_stability_index: null
+    csa_feasible_fraction: null
+    csa_feasible_solid_angle_sr: null
+    csa_angular_clearance_deg: null
+    csa_applicable: null
+    cad_status: "verified"
+  -
+    id: 3
+    original_catalog_pose_id: 3
+    equivalent_catalog_pose_ids: [3]
+    stability: "robust"
+    planner_role: "stable_target"
+    orientation_quaternion_xyzw: [0.0, 0.0, 0.0, 1.0]
+    contacts:
+      floor: "face"
+      wall: "face"
+      main_face_on_floor: false
+      main_face_on_wall: false
+    rocking_barrier_mm: 1.0
+    csa_stability_index: null
+    csa_feasible_fraction: null
+    csa_feasible_solid_angle_sr: null
+    csa_angular_clearance_deg: null
+    csa_applicable: null
+    cad_status: "verified"
+transitions:
+  -
+    id: "direct"
+    from_pose: 1
+    to_pose: 3
+    directed: true
+    type: "actuated"
+    action:
+      name: "free_y"
+      axis: "y"
+      axis_vector_chute: [0.0, 1.0, 0.0]
+      direction: "positive"
+      commanded_angle_deg: 45.0
+      impulse_cost: 1
+      surface_requirement: null
+      additional_requirement: null
+    capture:
+      interval_deg: [35.0, 55.0]
+      width_deg: 20.0
+      fraction: 0.5
+    geometry:
+      target_barrier_score: 1.0
+      geometric_score: 0.5
+      axis_error_deg: 0.0
+      passive_escape_barrier_mm: null
+      passive_saddle_angle_deg: null
+      passive_settling_via_catalog_pose_ids: []
+    experimental:
+      status: "untested"
+      trials: null
+      successes: null
+      empirical_success_rate: null
+      difficulty_rating: null
+      notes: ""
