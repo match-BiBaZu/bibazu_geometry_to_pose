@@ -266,11 +266,12 @@ def filter_finite_disturbance_robustness(
     catalog: PoseCatalog,
     *,
     minimum_barrier_height_mm: float = 0.73,
-    minimum_braking_g: float = 0.10,
+    minimum_braking_g: float = 0.0,
 ) -> FiniteDisturbanceFilterResult:
-    """Require a calibrated rocking barrier and braking reserve for every pose.
+    """Require a rocking barrier, with an optional braking-reserve gate.
 
-    A finite rocking barrier is necessary but not sufficient: an edge contact
+    By default only the gravitational barrier is used (no braking load).
+    When a positive braking threshold is requested, an edge contact
     can still unload immediately under braking. Applying the same braking limit
     to face-face and edge-containing poses avoids classifying a shallow edge
     landing as robust merely because its geometric rocking path rises briefly.
@@ -299,7 +300,10 @@ def filter_finite_disturbance_robustness(
             barriers[pose_id].barrier_height_mm >= minimum_barrier_height_mm
         )
         capacity = capacities[pose_id]
-        has_braking_reserve = capacity.critical_braking_g >= minimum_braking_g
+        has_braking_reserve = (
+            minimum_braking_g == 0.0
+            or capacity.critical_braking_g >= minimum_braking_g
+        )
         if has_barrier and has_braking_reserve:
             accepted.append(pose_id)
     accepted_set = set(accepted)

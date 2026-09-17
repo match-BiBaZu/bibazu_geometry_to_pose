@@ -15,16 +15,24 @@ Roadmap and filtered-pose generation now use the following defaults:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | Pose ranking | `rocking` | Lower pose numbers have a larger conservative rocking barrier. |
-| Robustness method | `rocking` | Robust/metastable classification uses the finite rocking barrier and the face-face braking safety gate. |
+| Robustness method | `rocking` | Robust/metastable classification uses the finite gravitational rocking barrier, without braking loads. |
 | Friction policy | `zero` | The inferred friction-range barrier is off; nominal admissibility is evaluated at `mu = 0` only. |
-| Rocking threshold | `0.20 mm` | Minimum centre-of-mass rise required before a pose is considered robust. |
-| Face-face braking threshold | `0.10 g` | Additional safety gate for poses simultaneously supported by floor and wall faces. |
+| Rocking threshold | `0.73 mm` | Roadmap default; use `--minimum-rocking-barrier-mm 0.20` for the requested comparison cutoff. |
+| Roadmap braking threshold | `0 g` | Disabled by default; a positive value explicitly enables the braking safety gate. |
 | Roadmap symmetry tolerance | `0.05 mm` | Maximum STL mapping error used for practical rotational-symmetry detection. |
 
 The zero-friction policy does **not** disable force and moment balance. It
 removes the inferred static-friction sweep and tests the nominal contact system
 once at `mu = 0`. Use `--friction-policy range` only when friction-dependent
 diagnostics are intentionally required.
+
+For the stationary X=45°, Y=0° setup, use `--alpha 45 --beta 0
+--friction-policy zero --minimum-braking-g 0`. CWSA then uses normal contact
+forces only, and rocking classification uses no braking safeguard. The existing
+angle defaults have not changed, so pass `--beta 0` explicitly. Old exported
+roadmaps/comparison plots must be regenerated; loading them does not recompute
+their scores. New roadmap JSON/YAML record `csa_load_model` and
+`minimum_braking_g`; missing values in older files remain unknown.
 
 ## Setup and launcher
 
@@ -92,6 +100,23 @@ The default flags are equivalent to:
 ```text
 --pose-ranking rocking --robustness-method rocking --friction-policy zero
 ```
+
+To generate full and stable-only comparison plots with both rocking and CWSA
+values, add `--comparison-plots`. For example, at X45/Y0 with a 0.20 mm cutoff:
+
+```powershell
+.\chute-pose.ps1 roadmap .\Werkstücke_STL_grob\Dl1a.STL `
+  --output-dir .\Poses_Found_Robust\Dl1a_x45_y0_barrier_020 `
+  --geometry-status verified --alpha 45 --beta 0 `
+  --minimum-rocking-barrier-mm 0.20 --comparison-plots
+```
+
+This computes CWSA during the same build while retaining rocking classification
+and unique roadmap IDs. It adds `*_roadmap_comparison.svg/png` and
+`*_roadmap_comparison_stable.svg/png` to the usual exports. Comparison labels
+are shared `rocking rank (CWSA rank)`, starting at zero. Rocking ties use
+0.000001 mm tolerance; CWSA ties use the displayed three-decimal score. The
+regular roadmap JSON/YAML also contain the full-precision CWSA measurements.
 
 Request the former inferred-friction sweep explicitly:
 
@@ -244,13 +269,14 @@ disturbance to initiate tipping. It is not a probability or a force. The
 irregularities, not a material constant, and should be checked against physical
 trials for new part families.
 
-### 7. Face-face braking safety gate
+### 7. Optional braking safety gate
 
-A face-face pose can have a large rocking barrier while still releasing too
-easily under downhill braking. Such poses must also meet the default critical
-braking capacity of `0.10 g`. Edge-contact and rolling cases continue to use
-their applicable rocking/continuous-contact logic. This gate supplements the
-rocking classifier; it is not the old friction-range pose barrier.
+A pose can have a large rocking barrier while still releasing under braking.
+For moving-part studies, explicitly set `--minimum-braking-g 0.10` (or another
+calibrated value) to require braking reserve for every pose and enable the
+additional continuous-symmetry braking safeguard. Both are disabled by default
+in roadmaps for the no-sliding assessment. The separate `disturbance` command
+retains its dynamic-study defaults and braking diagnostics remain available.
 
 ### 8. Roadmap transition construction
 
@@ -297,8 +323,20 @@ contribute zero; the score averages the worst sampled contact-load margin over
 the cap. Its `0..1` score is absolute and dimensionless, but is not a
 likelihood.
 
-The provisional experimental CWSA robustness cutoff is `0.65`; face-face poses
-still require the `0.10 g` braking safeguard. This cutoff needs calibration
+CWSA defaults to frictionless support (`mu_values=[0]`): no prescribed sliding
+friction, speed or braking loads. The `zero` policy does not use friction-onset
+angles or friction-sample counts. Explicit `--friction-policy range` restores
+the former sliding-friction sweep, including for CWSA. Contact reserve is checked
+independently of the forward-acceleration flag in both modes.
+
+At `--alpha 45 --beta 0`, nominal gravity has no X component, so no longitudinal
+holding force is needed. The angular cap still probes nearby gravity directions;
+it assesses tipping support, not longitudinal restraint at every perturbed
+direction. Neither CWSA nor rocking models static friction holding a part on a
+longitudinally inclined chute, impacts, velocity or time-dependent motion.
+
+The provisional experimental CWSA robustness cutoff remains `0.65`; there is no
+braking requirement by default. Removing friction can raise scores, so the cutoff needs calibration
 against measured trials. CWSA is not applicable to some continuously reseating
 rolling-contact modes because a fixed-contact sweep cannot model contact
 switching; those modes retain the documented rocking fallback.

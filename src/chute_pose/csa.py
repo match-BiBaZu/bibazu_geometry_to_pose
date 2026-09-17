@@ -23,6 +23,8 @@ from .contacts import ContactPose, PoseCatalog, build_pose_catalog
 from .frame import ChuteFrame
 from .geometry import load_solid_mesh
 from .stability import (
+    FrictionPolicy,
+    StabilitySample,
     _contact_boundary_indices,
     _solve_pose_sample,
     estimate_equal_contact_friction,
@@ -85,6 +87,12 @@ class ContactWrenchSolidAngleAnalysis:
     def to_dict(self) -> dict[str, Any]:
         return {
             "algorithm": CSA_ALGORITHM_LABEL,
+            "requires_positive_x_acceleration": False,
+            "load_model": (
+                "frictionless_support" if all(mu == 0.0 for mu in self.mu_values)
+                else "prescribed_sliding_friction"
+            ),
+            "models_longitudinal_restraint": False,
             "source": self.source,
             "alpha_deg": self.alpha_deg,
             "beta_deg": self.beta_deg,
@@ -221,6 +229,12 @@ def _patch_diagnostics(
     )
 
 
+def _has_contact_reserve(sample: StabilitySample, margin_tolerance: float) -> bool:
+    """Check support against tipping independently of longitudinal motion."""
+
+    return sample.equilibrium_feasible and sample.pressure_margin > margin_tolerance
+
+
 def analyze_contact_wrench_solid_angle(
     mesh_path: str | Path,
     *,
@@ -230,6 +244,7 @@ def analyze_contact_wrench_solid_angle(
     onset_alpha_deg: float = 45.0,
     onset_beta_deg: float = 15.0,
     mu_samples: int = 11,
+    friction_policy: FrictionPolicy = "zero",
     cap_half_angle_deg: float = DEFAULT_CSA_CAP_HALF_ANGLE_DEG,
     direction_samples: int = DEFAULT_CSA_DIRECTION_SAMPLES,
     catalog: PoseCatalog | None = None,
@@ -238,16 +253,26 @@ def analyze_contact_wrench_solid_angle(
 
     The equal-area cap samples represent solid-angle quadrature points.  At
     each point the score contribution is the minimum contact-load balance
-    margin over the requested friction range, or zero when any friction sample
-    loses equilibrium.  The average is therefore already normalized by the
-    cap solid angle and lies in ``0..1``.
+    margin over the requested friction samples, or zero when any friction sample
+    loses contact equilibrium or has no positive load margin. The forward
+    sliding/acceleration flag is deliberately excluded: deceleration or lack
+    of forward motion does not by itself mean tipping. The underlying samples
+    default to frictionless support (mu=0), with no sliding load. Explicit
+    friction_policy="range" restores the prescribed sliding-friction sweep.
+    Neither mode models static friction holding the part along X: longitudinal
+    translation is unconstrained, so this is a tipping-support assessment,
+    not proof of complete stationary equilibrium on a sloping chute.
+    The average is normalized by the cap solid angle
+    and lies in ``0..1``.
     """
 
     if not math.isfinite(cap_half_angle_deg) or not 0.0 < cap_half_angle_deg < 90.0:
         raise ValueError("cap_half_angle_deg must be between 0 and 90 degrees.")
     if direction_samples < 8:
         raise ValueError("direction_samples must be at least 8.")
-    if mu_samples < 2:
+    if friction_policy not in {"zero", "range"}:
+        raise ValueError("friction_policy must be 'zero' or 'range'.")
+    if friction_policy == "range" and mu_samples < 2:
         raise ValueError("mu_samples must be at least 2.")
 
     pose_catalog = catalog or build_pose_catalog(mesh_path)
@@ -270,11 +295,13 @@ def analyze_contact_wrench_solid_angle(
     directions = _equal_area_cap_directions(
         nominal_direction, half_angle_rad, direction_samples
     )
-    estimate = estimate_equal_contact_friction(
-        onset_alpha_deg=onset_alpha_deg,
-        onset_beta_deg=onset_beta_deg,
-    )
-    mu_values = np.linspace(0.0, estimate.mu_static_estimate, mu_samples)
+    mu_values = np.asarray([0.0])
+    if friction_policy == "range":
+        estimate = estimate_equal_contact_friction(
+            onset_alpha_deg=onset_alpha_deg,
+            onset_beta_deg=onset_beta_deg,
+        )
+        mu_values = np.linspace(0.0, estimate.mu_static_estimate, mu_samples)
 
     mesh = load_solid_mesh(mesh_path)
     hull = mesh.convex_hull
@@ -300,7 +327,7 @@ def analyze_contact_wrench_solid_angle(
         )
         nominal_margin = (
             min(value.pressure_margin for value in nominal_samples)
-            if all(value.stable for value in nominal_samples)
+            if all(_has_contact_reserve(value, margin_tolerance) for value in nominal_samples)
             else 0.0
         )
         margins: list[float] = []
@@ -320,7 +347,7 @@ def analyze_contact_wrench_solid_angle(
                 )
                 for mu in mu_values
             )
-            accepted = all(value.stable for value in samples)
+            accepted = all(_has_contact_reserve(value, margin_tolerance) for value in samples)
             feasible.append(accepted)
             margins.append(
                 min(value.pressure_margin for value in samples) if accepted else 0.0

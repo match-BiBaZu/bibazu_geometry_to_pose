@@ -1,6 +1,8 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
+from chute_pose.rocking import filter_finite_disturbance_robustness
 
 from chute_pose import (
     analyze_rocking_barriers,
@@ -12,6 +14,25 @@ from chute_pose import (
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PARTS = REPOSITORY_ROOT / "Werkstücke_STL_grob"
+
+
+def test_static_rocking_classification_does_not_require_braking_reserve() -> None:
+    rocking = SimpleNamespace(barriers=[
+        SimpleNamespace(pose_id=0, barrier_height_mm=1.0),
+        SimpleNamespace(pose_id=1, barrier_height_mm=0.05),
+    ])
+    disturbance = SimpleNamespace(capacities=[
+        SimpleNamespace(pose_id=0, critical_braking_g=0.0),
+        SimpleNamespace(pose_id=1, critical_braking_g=0.5),
+    ])
+    catalog = SimpleNamespace(poses=[SimpleNamespace(pose_id=0), SimpleNamespace(pose_id=1)])
+    static = filter_finite_disturbance_robustness(rocking, disturbance, catalog)
+    braking = filter_finite_disturbance_robustness(
+        rocking, disturbance, catalog, minimum_braking_g=0.10,
+    )
+    assert static.accepted_pose_ids == (0,)
+    assert static.minimum_braking_g == 0.0
+    assert braking.accepted_pose_ids == ()
 
 
 def test_qk1a_observed_diagonal_pose_has_deeper_finite_barrier() -> None:

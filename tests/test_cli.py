@@ -28,7 +28,8 @@ def test_rocking_remains_the_default_ranking_and_classifier() -> None:
     assert args.minimum_csa_score == DEFAULT_CSA_ROBUST_THRESHOLD
     assert args.csa_cap_half_angle_deg == DEFAULT_CSA_CAP_HALF_ANGLE_DEG
     assert args.csa_direction_samples == DEFAULT_CSA_DIRECTION_SAMPLES
-    assert args.minimum_braking_g == 0.10
+    assert args.minimum_braking_g == 0.0
+    assert args.friction_policy == "zero"
 
 
 def test_roadmap_accepts_the_legacy_face_face_braking_flag() -> None:

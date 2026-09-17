@@ -220,6 +220,8 @@ class PoseRoadmap:
     csa_direction_samples: int = DEFAULT_CSA_DIRECTION_SAMPLES
     csa_rocking_fallback_pose_ids: tuple[int, ...] = ()
     friction_policy: FrictionPolicy = "zero"
+    minimum_braking_g: float | None = None
+    csa_load_model: str | None = None
 
     def node(self, node_or_pose_id: int) -> RoadmapNode:
         # Roadmap display IDs take precedence because the compact 0..N-1
@@ -248,6 +250,8 @@ class PoseRoadmap:
             "opposite_x_min_height_mm": self.opposite_x_min_height_mm,
             "robust_barrier_threshold_mm": self.robust_barrier_threshold_mm,
             "friction_policy": self.friction_policy,
+            "minimum_braking_g": self.minimum_braking_g,
+            "csa_load_model": self.csa_load_model,
             "pose_ranking_method": self.pose_ranking_method,
             "robustness_method": self.robustness_method,
             "minimum_csa_score": self.minimum_csa_score,
@@ -312,6 +316,8 @@ class PoseRoadmap:
                 for item in value.get("csa_rocking_fallback_pose_ids", ())
             ),
             friction_policy=value.get("friction_policy", "range"),
+            minimum_braking_g=value.get("minimum_braking_g"),
+            csa_load_model=value.get("csa_load_model"),
         )
 
 
@@ -988,7 +994,7 @@ def build_pose_roadmap(
     angular_tolerance_deg: float = 1.0,
     surface_displacement_tolerance_mm: float = 0.5,
     robust_barrier_threshold_mm: float = 0.73,
-    minimum_braking_g: float = 0.10,
+    minimum_braking_g: float = 0.0,
     opposite_x_min_height_mm: float = 25.0,
     geometry_status: str = "provisional",
     pose_ranking_method: PoseRankingMethod = "rocking",
@@ -997,8 +1003,9 @@ def build_pose_roadmap(
     csa_cap_half_angle_deg: float = DEFAULT_CSA_CAP_HALF_ANGLE_DEG,
     csa_direction_samples: int = DEFAULT_CSA_DIRECTION_SAMPLES,
     friction_policy: FrictionPolicy = "zero",
+    include_csa: bool = False,
 ) -> PoseRoadmap:
-    """Build the robust/metastable physical pose roadmap for one part."""
+    """Build a roadmap, optionally measuring CWSA without changing classification."""
 
     if geometry_status not in {"provisional", "verified"}:
         raise ValueError("geometry_status must be 'provisional' or 'verified'.")
@@ -1063,7 +1070,7 @@ def build_pose_roadmap(
     csa = None
     csa_filter = None
     csa_rocking_fallback_pose_ids: set[int] = set()
-    if pose_ranking_method == "csa" or robustness_method == "csa":
+    if include_csa or pose_ranking_method == "csa" or robustness_method == "csa":
         csa = analyze_contact_wrench_solid_angle(
             mesh_path,
             pose_ids=roadmap_pose_ids,
@@ -1073,6 +1080,7 @@ def build_pose_roadmap(
             onset_beta_deg=onset_beta_deg,
             cap_half_angle_deg=csa_cap_half_angle_deg,
             direction_samples=csa_direction_samples,
+            friction_policy=friction_policy,
             catalog=catalog,
         )
         csa_filter = filter_contact_wrench_solid_angle(
@@ -1089,7 +1097,8 @@ def build_pose_roadmap(
         robust_pose_ids = set()
         for pose_id in csa_filter.accepted_pose_ids:
             if (
-                disturbance_by_pose_id[pose_id].critical_braking_g
+                minimum_braking_g == 0.0
+                or disturbance_by_pose_id[pose_id].critical_braking_g
                 >= minimum_braking_g
             ):
                 robust_pose_ids.add(pose_id)
@@ -1103,7 +1112,8 @@ def build_pose_roadmap(
         robust_pose_ids.update(csa_rocking_fallback_pose_ids)
         robust_pose_ids.intersection_update(nominal_ids)
     poses = {pose.pose_id: pose for pose in catalog.poses}
-    if catalog.continuous_symmetry_axis_part is not None:
+    if catalog.continuous_symmetry_axis_part is not None and minimum_braking_g > 0.0:
+        # Only apply this dynamic safeguard when braking is explicitly requested.
         # End-face/mantle states of an axially asymmetric Cinf body can be
         # statically admissible yet tip at the first braking impulse.  Keep
         # them as metastable roadmap states; only lateral-lateral support is
@@ -1308,6 +1318,8 @@ def build_pose_roadmap(
             sorted(csa_rocking_fallback_pose_ids)
         ),
         friction_policy=friction_policy,
+        minimum_braking_g=minimum_braking_g,
+        csa_load_model=csa.to_dict()["load_model"] if csa is not None else None,
     )
 
 
@@ -1516,6 +1528,8 @@ def roadmap_handover_dict(roadmap: PoseRoadmap) -> dict[str, Any]:
         "classification": {
             "symmetry": roadmap.symmetry_symbol,
             "friction_policy": roadmap.friction_policy,
+            "minimum_braking_g": roadmap.minimum_braking_g,
+            "csa_load_model": roadmap.csa_load_model,
             "pose_ranking_method": roadmap.pose_ranking_method,
             "robustness_method": roadmap.robustness_method,
             "robust_pose_ids": tuple(
@@ -2009,13 +2023,57 @@ def _separate_roadmap_angle_labels(
     figure.canvas.draw()
 
 
+def _roadmap_metric_ranks(
+    roadmap: PoseRoadmap,
+    metric: Literal["rocking_barrier_mm", "csa_stability_index"],
+    *,
+    absolute_tolerance: float = 1e-6,
+) -> dict[int, int]:
+    """Descending dense display ranks with ties appropriate to each metric.
+
+    CWSA ties use the same three-decimal formatting as the plotted values.
+    Rocking ties compare each value to its group's highest value, avoiding
+    rounding-bin boundaries and chains merging different endpoints.
+    Node identifiers and full-precision measurements remain untouched.
+    """
+
+    values = sorted(
+        ((float(getattr(node, metric)), node.node_id) for node in roadmap.nodes
+         if getattr(node, metric) is not None),
+        key=lambda item: (-item[0], item[1]),
+    )
+    if metric == "csa_stability_index":
+        displayed_values = {node_id: float(f"{value:.3f}") for value, node_id in values}
+        ranks = {
+            value: rank
+            for rank, value in enumerate(sorted(set(displayed_values.values()), reverse=True))
+        }
+        return {node_id: ranks[value] for node_id, value in displayed_values.items()}
+
+    result: dict[int, int] = {}
+    reference: float | None = None
+    rank = -1
+    for value, node_id in values:
+        if reference is None or reference - value > absolute_tolerance:
+            rank += 1
+            reference = value
+        result[node_id] = rank
+    return result
+
+
 def render_pose_roadmap(
     roadmap: PoseRoadmap,
     output_stem: str | Path,
     *,
     stable_only: bool = False,
+    show_csa_ranks: bool = False,
 ) -> tuple[Path, Path]:
     """Render a full roadmap or only its robust nodes and transitions."""
+
+    # Rank the complete set before filtering the stable-only view. Comparison
+    # labels show shared rocking ranks (CWSA ranks), not unique roadmap IDs.
+    rocking_ranks = _roadmap_metric_ranks(roadmap, "rocking_barrier_mm") if show_csa_ranks else {}
+    csa_ranks = _roadmap_metric_ranks(roadmap, "csa_stability_index") if show_csa_ranks else {}
 
     if stable_only:
         stable_node_ids = {
@@ -2170,9 +2228,13 @@ def render_pose_roadmap(
         show_csa = (
             roadmap.pose_ranking_method == "csa"
             or roadmap.robustness_method == "csa"
+            or show_csa_ranks
         )
         axis.annotate(
-            str(node.node_id),
+            (
+                f"{rocking_ranks[node.node_id]} ({csa_ranks.get(node.node_id, 'n/a')})"
+                if show_csa_ranks else str(node.node_id)
+            ),
             positions[node.node_id],
             xytext=(0, 56 if robust_node else 44),
             textcoords="offset points",
@@ -2218,6 +2280,17 @@ def render_pose_roadmap(
             f"{sum(node.kind == 'metastable' for node in roadmap.nodes)} metastable"
         )
     axis.set_title(title, fontsize=16, pad=18)
+    if show_csa_ranks:
+        figure.text(
+            0.5,
+            0.95,
+            "Labels: rocking rank (CWSA rank); 0 = highest. "
+            "Ties: rocking within 1e-6 mm, CWSA at 3 decimals.\n"
+            f"colours: {roadmap.robustness_method} classification. "
+            f"Chute X={roadmap.alpha_deg:g}°, Y={roadmap.beta_deg:g}°",
+            ha="center",
+            fontsize=10,
+        )
     legend_items = [
         Line2D([0], [0], color=_ROADMAP_AXIS_COLORS["x"], lw=2.4, label="X rotation"),
         Line2D([0], [0], color=_ROADMAP_AXIS_COLORS["y"], lw=2.4, label="Y rotation"),
@@ -2271,7 +2344,8 @@ def render_pose_roadmap(
         figure.text(
             0.99,
             0.02,
-            "Unresolved passive successor edge for: "
+            ("Unresolved passive successor edge for roadmap IDs: "
+             if show_csa_ranks else "Unresolved passive successor edge for: ")
             + "/".join(
                 str(value) for value in roadmap.unresolved_metastable_node_ids
             ),
@@ -2290,8 +2364,8 @@ def render_pose_roadmap(
 
 
 def export_pose_roadmap(
-    roadmap: PoseRoadmap, output_dir: str | Path
-) -> tuple[Path, Path, Path, Path, Path, Path, Path, Path]:
+    roadmap: PoseRoadmap, output_dir: str | Path, *, comparison_plots: bool = False
+) -> tuple[Path, ...]:
     destination = Path(output_dir).expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     stem = Path(roadmap.source).stem
@@ -2309,7 +2383,7 @@ def export_pose_roadmap(
         destination / f"{stem}_roadmap_stable",
         stable_only=True,
     )
-    return (
+    paths = (
         json_path,
         yaml_path,
         yaml_readme_path,
@@ -2319,3 +2393,13 @@ def export_pose_roadmap(
         stable_svg_path,
         stable_png_path,
     )
+    if comparison_plots:
+        for stable_only in (False, True):
+            suffix = "_stable" if stable_only else ""
+            paths += render_pose_roadmap(
+                roadmap,
+                destination / f"{stem}_roadmap_comparison{suffix}",
+                stable_only=stable_only,
+                show_csa_ranks=True,
+            )
+    return paths

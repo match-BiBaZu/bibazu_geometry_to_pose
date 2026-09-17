@@ -436,14 +436,36 @@ def test_rl4i_blocks_narrow_opposite_x_support_and_rejects_weak_edge_poses() -> 
 
 
 def test_df4a_uses_disturbance_reserves_in_addition_to_rocking_barrier() -> None:
-    roadmap = build_pose_roadmap(DF4A_STL, geometry_status="verified")
+    roadmap = build_pose_roadmap(DF4A_STL, geometry_status="verified", minimum_braking_g=0.10)
 
     assert roadmap.node(10).kind == "robust"
     assert all(roadmap.node(node_id).kind == "metastable" for node_id in (11, 12, 13))
 
 
+def test_static_round_part_roadmap_has_no_implicit_braking_gate() -> None:
+    roadmap = build_pose_roadmap(
+        KK1A_STL, alpha_deg=45.0, beta_deg=0.0, include_csa=True,
+        csa_direction_samples=8,
+    )
+    assert roadmap.minimum_braking_g == 0.0
+    assert roadmap.csa_load_model == "frictionless_support"
+    # At zero longitudinal slope all these candidates have nominal support;
+    # non-mantle poses must not be demoted by the old round-part braking rule.
+    assert all(
+        (node.kind == "robust")
+        == (node.rocking_barrier_mm >= roadmap.robust_barrier_threshold_mm)
+        for node in roadmap.nodes
+    )
+    loaded = PoseRoadmap.from_dict(roadmap.to_dict())
+    assert loaded.minimum_braking_g == 0.0
+    assert loaded.csa_load_model == "frictionless_support"
+    handover = roadmap_handover_dict(roadmap)
+    assert handover["classification"]["minimum_braking_g"] == 0.0
+    assert handover["classification"]["csa_load_model"] == "frictionless_support"
+
+
 def test_kk1a_continuous_symmetry_keeps_dominant_mantle_poses() -> None:
-    roadmap = build_pose_roadmap(KK1A_STL)
+    roadmap = build_pose_roadmap(KK1A_STL, minimum_braking_g=0.10)
 
     assert roadmap.symmetry_symbol == "Cinf"
     assert [node.node_id for node in roadmap.nodes] == [0, 1, 2, 3, 4, 5]
@@ -519,10 +541,14 @@ def test_geometric_score_rewards_wide_deep_capture_basin() -> None:
 
 
 def test_dl1a_free_axis_end_face_targets_score_below_observed_outlet_poses() -> None:
+    # These observed moving-part labels were calibrated at the old 0.20 mm
+    # cutoff with braking enabled, not at the conservative 0.73 mm default.
     roadmap = build_pose_roadmap(
         DL1A_STL,
         geometry_status="verified",
         friction_policy="range",
+        robust_barrier_threshold_mm=0.20,
+        minimum_braking_g=0.10,
     )
     incoming_scores: dict[int, list[float]] = {node.node_id: [] for node in roadmap.nodes}
     for edge in roadmap.edges:

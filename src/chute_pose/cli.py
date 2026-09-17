@@ -194,6 +194,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     roadmap_parser.add_argument("mesh", type=Path)
     roadmap_parser.add_argument("--output-dir", type=Path, required=True)
+    roadmap_parser.add_argument(
+        "--comparison-plots",
+        action="store_true",
+        help=(
+            "Also compute CWSA and export full/stable-only comparison PNG/SVG "
+            "plots with shared rocking ranks (CWSA ranks)."
+        ),
+    )
     roadmap_parser.add_argument("--alpha", type=float, default=45.0)
     roadmap_parser.add_argument("--beta", type=float, default=20.0)
     roadmap_parser.add_argument("--onset-alpha", type=float, default=45.0)
@@ -203,8 +211,8 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("range", "zero"),
         default="zero",
         help=(
-            "Select roadmap input poses using nominal mu=0 equilibrium only "
-            "(default) or the full inferred friction range."
+            "Select roadmap input poses and CWSA using mu=0 (default, no sliding loads) "
+            "or the inferred sliding-friction range."
         ),
     )
     roadmap_parser.add_argument(
@@ -232,8 +240,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--minimum-face-face-braking-g",
         dest="minimum_braking_g",
         type=float,
-        default=0.10,
-        help="Minimum braking reserve required for every roadmap pose.",
+        default=0.0,
+        help="Optional braking reserve for every roadmap pose; default 0 disables braking checks.",
     )
     roadmap_parser.add_argument(
         "--pose-ranking", choices=("rocking", "csa"), default="rocking"
@@ -477,6 +485,7 @@ def _stability(args: argparse.Namespace) -> int:
             mu_samples=args.mu_samples,
             cap_half_angle_deg=args.csa_cap_half_angle_deg,
             direction_samples=args.csa_direction_samples,
+            friction_policy=args.friction_policy,
             catalog=catalog,
         )
         if args.pose_ranking == "csa"
@@ -824,6 +833,7 @@ def _disturbance(args: argparse.Namespace) -> int:
             mu_samples=args.mu_samples,
             cap_half_angle_deg=args.csa_cap_half_angle_deg,
             direction_samples=args.csa_direction_samples,
+            friction_policy=args.friction_policy,
             catalog=catalog,
         )
         if args.pose_ranking == "csa"
@@ -1036,6 +1046,7 @@ def _roadmap(args: argparse.Namespace) -> int:
         csa_cap_half_angle_deg=args.csa_cap_half_angle_deg,
         csa_direction_samples=args.csa_direction_samples,
         friction_policy=args.friction_policy,
+        include_csa=args.comparison_plots,
     )
     if (
         args.expected_symmetry is not None
@@ -1046,7 +1057,9 @@ def _roadmap(args: argparse.Namespace) -> int:
             f"{args.expected_symmetry}, detected {result.symmetry_symbol} "
             f"at {result.symmetry_tolerance_mm:g} mm tolerance."
         )
-    paths = export_pose_roadmap(result, args.output_dir)
+    paths = export_pose_roadmap(
+        result, args.output_dir, comparison_plots=args.comparison_plots
+    )
     if args.as_json:
         print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
         return 0
