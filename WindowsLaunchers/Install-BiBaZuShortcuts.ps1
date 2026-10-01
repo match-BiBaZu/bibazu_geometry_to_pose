@@ -9,11 +9,13 @@ $ErrorActionPreference = 'Stop'
 if ($DesktopOnly -and $StartMenuOnly) { throw 'Choose DesktopOnly OR StartMenuOnly.' }
 $launcherDirectory = Split-Path -Parent $PSCommandPath
 $repository = Split-Path -Parent $launcherDirectory
+$launcher = Join-Path $repository 'PoseRoadmapGUI.cmd'
 $python = Join-Path $repository '.venv\Scripts\pythonw.exe'
 $consolePython = Join-Path $repository '.venv\Scripts\python.exe'
 $icon = Join-Path $launcherDirectory 'icons\pose-roadmap.ico'
-$arguments = '"' + (Join-Path $repository 'PoseRoadmapGUI.py') + '"'
-foreach ($file in @($python, $consolePython, $icon)) {
+$commandHost = Join-Path $env:WINDIR 'System32\cmd.exe'
+$arguments = '/d /c ""' + $launcher + '""'
+foreach ($file in @($launcher, $commandHost, $python, $consolePython, $icon)) {
     if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
         throw "Missing: $file. Run 'uv sync --extra gui' in $repository first."
     }
@@ -35,7 +37,7 @@ foreach ($destination in $destinations) {
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
     $path = Join-Path $destination 'BiBaZu Pose Roadmap Generator.lnk'
     $shortcut = $shell.CreateShortcut($path)
-    $shortcut.TargetPath = $python
+    $shortcut.TargetPath = $commandHost
     $shortcut.Arguments = $arguments
     $shortcut.WorkingDirectory = $repository
     $shortcut.IconLocation = "$icon,0"
@@ -43,7 +45,7 @@ foreach ($destination in $destinations) {
     $shortcut.WindowStyle = 1
     $shortcut.Save()
     $saved = $shell.CreateShortcut($path)
-    if ($saved.TargetPath -ne $python -or $saved.Arguments -ne $arguments -or
+    if ($saved.TargetPath -ne $commandHost -or $saved.Arguments -ne $arguments -or
         $saved.IconLocation -ne "$icon,0" -or $saved.WorkingDirectory -ne $repository) {
         throw "Shortcut verification failed: $path"
     }

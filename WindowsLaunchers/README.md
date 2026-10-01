@@ -16,7 +16,8 @@ This is a launcher, not a bundled executable: Python dependencies are still requ
 .\WindowsLaunchers\Uninstall-BiBaZuShortcuts.ps1 -StartMenuOnly
 ```
 
-Installation resolves the current clone's absolute path. Re-run the installer
-after moving/cloning the repository or recreating its `.venv`.
+Installation resolves the current clone's absolute path and uses `cmd.exe` to
+run `PoseRoadmapGUI.cmd`. Windows can pin this shortcut to Start. Re-run the
+installer after moving/cloning the repository.
 `-DestinationDirectory <folder>` permits a custom/test shortcut location.
 Icons (PNG source and multi-resolution ICO) live in `icons/`.
