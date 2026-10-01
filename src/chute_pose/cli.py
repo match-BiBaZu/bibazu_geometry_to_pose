@@ -244,11 +244,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Optional braking reserve for every roadmap pose; default 0 disables braking checks.",
     )
     roadmap_parser.add_argument(
-        "--pose-ranking", choices=("rocking", "csa"), default="rocking"
+        "--pose-ranking", choices=("rocking", "csa", "cwsa", "standard_csa", "crsa"), default="rocking"
     )
     roadmap_parser.add_argument(
-        "--robustness-method", choices=("rocking", "csa"), default="rocking"
+        "--robustness-method", choices=("rocking", "csa", "cwsa", "standard_csa", "crsa"), default="rocking"
     )
+    roadmap_parser.add_argument("--classical-methods", nargs="+", choices=("standard_csa", "crsa"), default=())
+    roadmap_parser.add_argument("--minimum-classical-score", type=float,
+                                help="Explicit experimental CSA/CRSA raw cutoff in sr/mm; required for classification.")
     roadmap_parser.add_argument(
         "--minimum-csa-score",
         type=float,
@@ -1047,6 +1050,8 @@ def _roadmap(args: argparse.Namespace) -> int:
         csa_direction_samples=args.csa_direction_samples,
         friction_policy=args.friction_policy,
         include_csa=args.comparison_plots,
+        classical_methods=tuple(args.classical_methods),
+        minimum_classical_score=args.minimum_classical_score,
     )
     if (
         args.expected_symmetry is not None

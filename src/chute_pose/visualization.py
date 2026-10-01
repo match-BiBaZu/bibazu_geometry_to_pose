@@ -265,11 +265,15 @@ def render_pose_sheets(
     filename_prefix: str = "Df1a",
     pose_labels: Mapping[int, str] | None = None,
     catalog: PoseCatalog | None = None,
+    formats: tuple[str, ...] = ("png",),
+    metric_labels: Mapping[int, list[tuple[str, str]]] | None = None,
 ) -> tuple[RenderedSheet, ...]:
     """Render the theoretical catalog as grouped, high-resolution PNG sheets."""
 
     if poses_per_sheet <= 0 or columns <= 0 or dpi <= 0:
         raise ValueError("poses_per_sheet, columns and dpi must be positive.")
+    if not formats or any(fmt not in {"png", "svg"} for fmt in formats):
+        raise ValueError("Pose-sheet formats must be png and/or svg.")
 
     pose_catalog = catalog or build_pose_catalog(mesh_path)
     selected_order = (
@@ -308,7 +312,8 @@ def render_pose_sheets(
     for group_name, group_poses in sorted(groups.items()):
         for page_index, page_poses in enumerate(_chunks(group_poses, poses_per_sheet), start=1):
             rows = math.ceil(len(page_poses) / columns)
-            figure = plt.figure(figsize=(columns * 3.1, rows * 2.8), facecolor="white")
+            extra = max((len((metric_labels or {}).get(p.pose_id, [])) for p in page_poses), default=0)
+            figure = plt.figure(figsize=(columns * 3.1, rows * (2.8 + 0.22 * extra)), facecolor="white")
             first_pose = page_poses[0]
             figure.suptitle(
                 f"{sheet_title}\n"
@@ -317,14 +322,15 @@ def render_pose_sheets(
                 f"Page {page_index}",
                 fontsize=14,
             )
+            sheet_grid = figure.add_gridspec(rows, columns)
             for plot_index, pose in enumerate(page_poses, start=1):
-                axis = figure.add_subplot(
-                    rows,
-                    columns,
-                    plot_index,
-                    projection="3d",
-                    computed_zorder=False,
-                )
+                cell = sheet_grid[(plot_index - 1) // columns, (plot_index - 1) % columns]
+                if metric_labels:
+                    cell_grid = cell.subgridspec(2, 1, height_ratios=(4, max(1, 0.38 * extra)), hspace=0)
+                    axis = figure.add_subplot(cell_grid[0], projection="3d", computed_zorder=False)
+                    label_axis = figure.add_subplot(cell_grid[1]); label_axis.set_axis_off()
+                else:
+                    axis = figure.add_subplot(cell, projection="3d", computed_zorder=False)
                 _draw_pose(
                     axis,
                     pose,
@@ -332,6 +338,9 @@ def render_pose_sheets(
                     mesh_faces,
                     pose_label=(pose_labels or {}).get(pose.pose_id),
                 )
+                for line_index, (text, color) in enumerate((metric_labels or {}).get(pose.pose_id, [])):
+                    label_axis.text(0.5, 0.95 - line_index / (extra + 0.3), text,
+                                    transform=label_axis.transAxes, ha="center", va="top", fontsize=7, color=color)
 
             figure.text(
                 0.01,
@@ -341,17 +350,12 @@ def render_pose_sheets(
                 "Red/square: corner contact | Corner line = X axis | Red arrow = +X downhill",
                 fontsize=9,
             )
-            figure.tight_layout(rect=(0.0, 0.025, 1.0, 0.95))
-            filename = f"{filename_prefix}_{group_name}_page-{page_index:02d}.png"
-            path = destination / filename
-            figure.savefig(path, dpi=dpi, bbox_inches="tight")
+            figure.tight_layout(rect=(0.0, 0.065 if metric_labels else 0.025, 1.0, 0.95))
+            for fmt in formats:
+                filename = f"{filename_prefix}_{group_name}_page-{page_index:02d}.{fmt}"
+                path = destination / filename
+                figure.savefig(path, dpi=dpi, bbox_inches="tight")
+                rendered.append(RenderedSheet(path=path, pose_ids=tuple(p.pose_id for p in page_poses), contact_group=group_name))
             plt.close(figure)
-            rendered.append(
-                RenderedSheet(
-                    path=path,
-                    pose_ids=tuple(pose.pose_id for pose in page_poses),
-                    contact_group=group_name,
-                )
-            )
 
     return tuple(rendered)

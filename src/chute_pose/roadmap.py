@@ -6,7 +6,7 @@ import base64
 import heapq
 import json
 import math
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal
@@ -23,6 +23,7 @@ from matplotlib.text import Annotation
 from scipy.spatial.transform import Rotation
 
 from .contacts import ContactPose, build_pose_catalog
+from .classical import METHODS as CLASSICAL_METHODS, MODEL_VERSION, analyze_chute_classical
 from .csa import (
     DEFAULT_CSA_CAP_HALF_ANGLE_DEG,
     DEFAULT_CSA_DIRECTION_SAMPLES,
@@ -41,10 +42,11 @@ from .rocking import (
 from .stability import FrictionPolicy, analyze_pose_stability
 from .symmetry import detect_rotational_symmetry
 from .visualization import create_pose_thumbnails
+from .metrics import metric_lines
 
 NodeKind = Literal["robust", "metastable"]
-PoseRankingMethod = Literal["rocking", "csa"]
-RobustnessMethod = Literal["rocking", "csa"]
+PoseRankingMethod = Literal["rocking", "csa", "cwsa", "standard_csa", "crsa"]
+RobustnessMethod = PoseRankingMethod
 TransitionKind = Literal["actuated", "passive_tip"]
 ActuationKind = Literal[
     "floor_main_neg_x",
@@ -76,6 +78,7 @@ class RoadmapNode:
     csa_feasible_solid_angle_sr: float | None = None
     csa_angular_clearance_deg: float | None = None
     csa_applicable: bool | None = None
+    classical_metrics: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def original_catalog_pose_id(self) -> int:
@@ -92,6 +95,7 @@ class RoadmapNode:
     def from_dict(cls, value: dict[str, Any]) -> RoadmapNode:
         return cls(
             node_id=int(value["node_id"]),
+            classical_metrics=value.get("classical_metrics", {}),
             pose_ids=tuple(int(item) for item in value["pose_ids"]),
             kind=value["kind"],
             cad_status=str(value.get("cad_status", "provisional")),
@@ -222,6 +226,7 @@ class PoseRoadmap:
     friction_policy: FrictionPolicy = "zero"
     minimum_braking_g: float | None = None
     csa_load_model: str | None = None
+    classical_metadata: dict[str, Any] = field(default_factory=dict)
 
     def node(self, node_or_pose_id: int) -> RoadmapNode:
         # Roadmap display IDs take precedence because the compact 0..N-1
@@ -237,6 +242,7 @@ class PoseRoadmap:
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
+            "classical_metadata": self.classical_metadata,
             "source": self.source,
             "geometry_status": self.geometry_status,
             "alpha_deg": self.alpha_deg,
@@ -275,6 +281,7 @@ class PoseRoadmap:
             raise ValueError("Unsupported roadmap schema version.")
         return cls(
             schema_version=1,
+            classical_metadata=value.get("classical_metadata", {}),
             source=str(value["source"]),
             geometry_status=str(value["geometry_status"]),
             alpha_deg=float(value["alpha_deg"]),
@@ -926,7 +933,7 @@ def _relabel_roadmap(
 ) -> tuple[tuple[RoadmapNode, ...], tuple[RoadmapEdge, ...], tuple[int, ...]]:
     """Assign compact stability-ranked roadmap IDs."""
 
-    if pose_ranking_method == "rocking":
+    if pose_ranking_method in {"rocking", "cwsa", "standard_csa", "crsa"}:
         ordered_nodes = sorted(
             nodes,
             key=lambda node: (
@@ -958,6 +965,14 @@ def _relabel_roadmap(
         replace(node, node_id=new_id_by_old_id[node.node_id])
         for node in ordered_nodes
     )
+    # New methods change presentation order, not identity or route references.
+    # The historical 'csa' option retains its legacy CWSA numbering.
+    if pose_ranking_method in {"cwsa", "standard_csa", "crsa"}:
+        def order_key(node):
+            score = (node.csa_stability_index if pose_ranking_method == "cwsa"
+                     else node.classical_metrics.get(pose_ranking_method, {}).get("raw_score"))
+            return (score is None, -(score or 0.0), node.node_id)
+        relabelled_nodes = tuple(sorted(relabelled_nodes, key=order_key))
 
     relabelled_edges: list[RoadmapEdge] = []
     for edge in edges:
@@ -1004,6 +1019,8 @@ def build_pose_roadmap(
     csa_direction_samples: int = DEFAULT_CSA_DIRECTION_SAMPLES,
     friction_policy: FrictionPolicy = "zero",
     include_csa: bool = False,
+    classical_methods: tuple[str, ...] = (),
+    minimum_classical_score: float | None = None,
 ) -> PoseRoadmap:
     """Build a roadmap, optionally measuring CWSA without changing classification."""
 
@@ -1011,14 +1028,24 @@ def build_pose_roadmap(
         raise ValueError("geometry_status must be 'provisional' or 'verified'.")
     if opposite_x_min_height_mm < 0.0:
         raise ValueError("opposite_x_min_height_mm must be non-negative.")
-    if pose_ranking_method not in {"rocking", "csa"}:
+    if pose_ranking_method not in {"rocking", "csa", "cwsa", *CLASSICAL_METHODS}:
         raise ValueError("pose_ranking_method must be 'rocking' or 'csa'.")
-    if robustness_method not in {"rocking", "csa"}:
+    if robustness_method not in {"rocking", "csa", "cwsa", *CLASSICAL_METHODS}:
         raise ValueError("robustness_method must be 'rocking' or 'csa'.")
     if friction_policy not in {"range", "zero"}:
         raise ValueError("friction_policy must be 'range' or 'zero'.")
     if not math.isfinite(minimum_csa_score) or not 0.0 <= minimum_csa_score <= 1.0:
         raise ValueError("minimum_csa_score must lie between 0 and 1.")
+    classical_methods = tuple(dict.fromkeys((*classical_methods, *(
+        method for method in (pose_ranking_method, robustness_method) if method in CLASSICAL_METHODS
+    ))))
+    if any(method not in CLASSICAL_METHODS for method in classical_methods):
+        raise ValueError("Unknown classical method.")
+    if robustness_method in CLASSICAL_METHODS and (
+        minimum_classical_score is None or not math.isfinite(minimum_classical_score)
+        or minimum_classical_score <= 0
+    ):
+        raise ValueError("CSA/CRSA classification requires an explicit positive raw-score threshold (sr/mm).")
     catalog = build_pose_catalog(mesh_path)
     nominal = analyze_pose_stability(
         mesh_path,
@@ -1070,7 +1097,7 @@ def build_pose_roadmap(
     csa = None
     csa_filter = None
     csa_rocking_fallback_pose_ids: set[int] = set()
-    if include_csa or pose_ranking_method == "csa" or robustness_method == "csa":
+    if include_csa or pose_ranking_method in {"csa", "cwsa"} or robustness_method in {"csa", "cwsa"}:
         csa = analyze_contact_wrench_solid_angle(
             mesh_path,
             pose_ids=roadmap_pose_ids,
@@ -1087,7 +1114,22 @@ def build_pose_roadmap(
             csa, minimum_score=minimum_csa_score
         )
 
-    if robustness_method == "rocking":
+    classical = analyze_chute_classical(
+        mesh_path, catalog, roadmap_pose_ids, alpha_deg=alpha_deg, beta_deg=beta_deg,
+        methods=classical_methods,
+    ) if classical_methods else {}
+    if robustness_method in CLASSICAL_METHODS:
+        robust_pose_ids = {
+            pid for pid, result in classical.items()
+            if getattr(result, robustness_method) is not None
+            and getattr(result, robustness_method) >= minimum_classical_score
+        }.intersection(nominal_ids)
+        if minimum_braking_g > 0:
+            robust_pose_ids.intersection_update(
+                value.pose_id for value in disturbance.capacities
+                if value.critical_braking_g >= minimum_braking_g
+            )
+    elif robustness_method == "rocking":
         robust_pose_ids = set(rocking_robust_pose_ids)
     else:
         assert csa is not None and csa_filter is not None
@@ -1220,8 +1262,32 @@ def build_pose_roadmap(
                     else None
                 ),
                 csa_applicable=class_csa_applicable,
+                classical_metrics={
+                    method: {
+                        "raw_score": (
+                            min(getattr(classical[pid], method) for pid in pose_class.pose_ids)
+                            if all(getattr(classical[pid], method) is not None for pid in pose_class.pose_ids)
+                            else None
+                        ),
+                        "units": "sr/mm",
+                        "reason": "; ".join(sorted({
+                            getattr(classical[pid], "csa_reason" if method == "standard_csa" else "crsa_reason")
+                            for pid in pose_class.pose_ids
+                        })),
+                    }
+                    for method in classical_methods
+                },
             )
         )
+    # Normalize before any output filtering. Catalogue sampling multiplicity is
+    # not physical aspect multiplicity; each practical class contributes once.
+    for method in classical_methods:
+        total = sum(node.classical_metrics[method]["raw_score"] or 0 for node in nodes)
+        for node in nodes:
+            metric = node.classical_metrics[method]
+            metric["normalized_share"] = (
+                metric["raw_score"] / total if metric["raw_score"] is not None and total > 0 else None
+            )
     nodes_by_id = {node.node_id: node for node in nodes}
     gravity = ChuteFrame(alpha_deg=alpha_deg, beta_deg=beta_deg).gravity_chute()
     actuated = _actuated_edges(
@@ -1320,6 +1386,15 @@ def build_pose_roadmap(
         friction_policy=friction_policy,
         minimum_braking_g=minimum_braking_g,
         csa_load_model=csa.to_dict()["load_model"] if csa is not None else None,
+        classical_metadata={
+            "model": MODEL_VERSION, "experimental": True,
+            "methods": classical_methods, "minimum_raw_score": minimum_classical_score,
+            "normalization": "applicable practical pose classes before robust filtering; not a calibrated probability",
+            "class_aggregation": "minimum across equivalent catalogue representations",
+            "longitudinal_restraint_modelled": False,
+            "references": ["10.1080/00207549508904822", "10.1007/BF01178966"],
+            "diagnostics": {str(pid): result.to_dict() for pid, result in classical.items()},
+        } if classical_methods else {},
     )
 
 
@@ -1526,6 +1601,7 @@ def roadmap_handover_dict(roadmap: PoseRoadmap) -> dict[str, Any]:
             "beta_deg": roadmap.beta_deg,
         },
         "classification": {
+            "classical_metadata": roadmap.classical_metadata,
             "symmetry": roadmap.symmetry_symbol,
             "friction_policy": roadmap.friction_policy,
             "minimum_braking_g": roadmap.minimum_braking_g,
@@ -1572,6 +1648,7 @@ def roadmap_handover_dict(roadmap: PoseRoadmap) -> dict[str, Any]:
                 "csa_feasible_solid_angle_sr": node.csa_feasible_solid_angle_sr,
                 "csa_angular_clearance_deg": node.csa_angular_clearance_deg,
                 "csa_applicable": node.csa_applicable,
+                "classical_metrics": node.classical_metrics,
                 "cad_status": node.cad_status,
             }
             for node in roadmap.nodes
@@ -1692,6 +1769,7 @@ def save_roadmap_graphml(roadmap: PoseRoadmap, path: str | Path) -> Path:
     destination = Path(path).expanduser().resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     graph = nx.MultiDiGraph()
+    graph.graph["classical_metadata"] = json.dumps(roadmap.classical_metadata)
     for node in roadmap.nodes:
         attributes: dict[str, Any] = {
             "original_catalog_pose_id": node.original_catalog_pose_id,
@@ -1709,6 +1787,7 @@ def save_roadmap_graphml(roadmap: PoseRoadmap, path: str | Path) -> Path:
         }
         if node.csa_applicable is not None:
             attributes["csa_applicable"] = node.csa_applicable
+        attributes["classical_metrics"] = json.dumps(node.classical_metrics)
         for key, value in (
             ("csa_stability_index", node.csa_stability_index),
             ("csa_feasible_fraction", node.csa_feasible_fraction),
@@ -2067,9 +2146,23 @@ def render_pose_roadmap(
     *,
     stable_only: bool = False,
     show_csa_ranks: bool = False,
-) -> tuple[Path, Path]:
+    display_methods: tuple[str, ...] | None = None,
+    formats: tuple[str, ...] = ("svg", "png"),
+    rank_reference: PoseRoadmap | None = None,
+) -> tuple[Path, ...]:
     """Render a full roadmap or only its robust nodes and transitions."""
 
+    if not formats or any(fmt not in {"svg", "png"} for fmt in formats):
+        raise ValueError("Roadmap formats must be svg and/or png.")
+    if show_csa_ranks and display_methods is None:
+        display_methods = ("rocking", "cwsa")
+    if display_methods is None and (roadmap.classical_metadata.get("methods") or roadmap.pose_ranking_method == "cwsa"):
+        display_methods = tuple(dict.fromkeys(("rocking", *(
+            ("cwsa",) if any(n.csa_stability_index is not None for n in roadmap.nodes) else ()
+        ), *roadmap.classical_metadata.get("methods", ()))))
+    elif show_csa_ranks:
+        display_methods = tuple(dict.fromkeys((*display_methods, *roadmap.classical_metadata.get("methods", ()))))
+    colored_lines = metric_lines(rank_reference or roadmap, display_methods) if display_methods else {}
     # Rank the complete set before filtering the stable-only view. Comparison
     # labels show shared rocking ranks (CWSA ranks), not unique roadmap IDs.
     rocking_ranks = _roadmap_metric_ranks(roadmap, "rocking_barrier_mm") if show_csa_ranks else {}
@@ -2098,7 +2191,7 @@ def render_pose_roadmap(
     graph.add_nodes_from(node.node_id for node in roadmap.nodes)
     graph.add_edges_from((edge.source, edge.target) for edge in roadmap.edges)
     positions, _, _ = _roadmap_plot_positions(roadmap)
-    figure, axis = plt.subplots(figsize=(18.0, 12.0), facecolor="white")
+    figure, axis = plt.subplots(figsize=(18.0, 12.0 + 1.2 * len(display_methods or ())), facecolor="white")
     axis.set_axis_off()
     x_values = [float(position[0]) for position in positions.values()] or [0.0]
     y_values = [float(position[1]) for position in positions.values()] or [0.0]
@@ -2233,7 +2326,7 @@ def render_pose_roadmap(
         axis.annotate(
             (
                 f"{rocking_ranks[node.node_id]} ({csa_ranks.get(node.node_id, 'n/a')})"
-                if show_csa_ranks else str(node.node_id)
+                if show_csa_ranks and not display_methods else f"Pose {node.node_id}"
             ),
             positions[node.node_id],
             xytext=(0, 56 if robust_node else 44),
@@ -2251,6 +2344,15 @@ def render_pose_roadmap(
             },
             zorder=9,
         )
+        if display_methods:
+            for line_index, (text, color) in enumerate(colored_lines[node.node_id]):
+                axis.annotate(
+                    text, positions[node.node_id], xytext=(0, -56 - 11 * line_index),
+                    textcoords="offset points", ha="center", va="top", fontsize=6.7,
+                    color=color, bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.94, "pad": 0.7},
+                    zorder=9,
+                )
+            continue
         metric_label = _format_roadmap_node_plot_label(
             node,
             show_csa=show_csa,
@@ -2280,7 +2382,15 @@ def render_pose_roadmap(
             f"{sum(node.kind == 'metastable' for node in roadmap.nodes)} metastable"
         )
     axis.set_title(title, fontsize=16, pad=18)
-    if show_csa_ranks:
+    if display_methods:
+        figure.text(
+            0.5, 0.95,
+            "Coloured metric ranks: 0 = highest; ties at displayed precision. Pose IDs remain unique.\n"
+            f"Selection: {roadmap.robustness_method}; X={roadmap.alpha_deg:g}°, Y={roadmap.beta_deg:g}°. "
+            "CSA/CRSA are experimental chute adaptations; N/A = unsupported.",
+            ha="center", fontsize=9,
+        )
+    elif show_csa_ranks:
         figure.text(
             0.5,
             0.95,
@@ -2357,10 +2467,11 @@ def render_pose_roadmap(
     figure.subplots_adjust(left=0.04, right=0.98, bottom=0.06, top=0.88)
     svg_path = stem.with_suffix(".svg")
     png_path = stem.with_suffix(".png")
-    figure.savefig(svg_path)
-    figure.savefig(png_path, dpi=220)
+    paths = tuple(stem.with_suffix('.' + fmt) for fmt in formats)
+    for path in paths:
+        figure.savefig(path, dpi=220)
     plt.close(figure)
-    return svg_path, png_path
+    return paths
 
 
 def export_pose_roadmap(

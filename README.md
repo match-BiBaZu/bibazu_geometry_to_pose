@@ -36,8 +36,36 @@ their scores. New roadmap JSON/YAML record `csa_load_model` and
 
 ## Setup and launcher
 
-The PowerShell launcher uses the same Python environment as the Reorientation
-Control GUI:
+### Pose Roadmap Generator GUI
+
+Double-click **`PoseRoadmapGUI.cmd`**, or run `./Start-PoseRoadmapGUI.ps1`.
+First run `uv sync --extra gui` in this repository. It uses this repository's
+own `.venv`; no BiBaZu_Big_Boi checkout is required.
+Double-click `WindowsLaunchers/Verknuepfungen-installieren.cmd` to install the
+**BiBaZu Pose Roadmap Generator** shortcut with its local custom icon.
+See [Windows launcher options](WindowsLaunchers/README.md).
+
+Select workpieces directly in the folder table. Hold Ctrl and click rows to add
+or remove individual files from the selection. Select all/none also applies to
+the currently filtered table rows. The Metric comparison pose sheets show each
+pose with its selected method values and ranks; Roadmap plots show the full
+transition graph. Choose the formats, displayed metrics, ordering and classifier.
+The preset is X=45°, Y=0°, rocking cutoff 0.20 mm, no sliding/braking loads,
+robust-only outputs. Kf workpieces appear in the same selection list as other
+parts. **Include metastable poses in pose sheets**
+is a separate option, off by default; enabling it leaves other robust-only
+outputs unchanged. The two sheet modes are written to separate folders. CAD
+status remains provisional unless explicitly confirmed. YAML-only selection
+produces no images or other formats.
+
+CSA and CRSA are now available as **experimental two-plane adaptations**, separate
+from CWSA. See [the equations, assumptions and limitations](docs/CSA_CRSA.md).
+They are not calibrated drop probabilities; unsupported contacts display N/A.
+An explicit raw-score cutoff is required to use either as a classifier.
+Existing CLI `csa` still means CWSA; new `cwsa`, `standard_csa` and `crsa` names
+avoid changing the meaning of old files and commands.
+
+The PowerShell CLI launcher also uses this repository's local `.venv`:
 
 ```powershell
 cd C:\Users\Administrator\Documents\Dashas_ws\bibazu_geometry_to_pose
