@@ -76,15 +76,20 @@ def test_render_selected_df1a_poses(tmp_path: Path) -> None:
     sheets = render_pose_sheets(
         DF1A_STL,
         tmp_path,
-        poses_per_sheet=3,
-        columns=3,
         dpi=72,
         pose_ids=[0, 1, 2],
+        formats=("png", "svg"),
+        sheet_title="Df1a",
+        metric_labels={0: [("Rocking: 0.385 mm", "black")]},
     )
 
-    assert sheets
-    assert sum(len(sheet.pose_ids) for sheet in sheets) == 3
+    assert len(sheets) == 6
+    assert all(len(sheet.pose_ids) == 1 for sheet in sheets)
     for sheet in sheets:
         assert sheet.path.is_file()
         assert sheet.path.stat().st_size > 1_000
+    svg = next(sheet.path for sheet in sheets if sheet.path.suffix == ".svg" and sheet.pose_ids == (0,))
+    content = svg.read_text(encoding="utf-8")
+    assert "Rocking: 0.385 mm" in content
+    assert all(label not in content for label in ("Floor:", "Wall:", "Page ", "Green/circle:"))
 

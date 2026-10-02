@@ -47,8 +47,8 @@ See [Windows launcher options](WindowsLaunchers/README.md).
 
 Select workpieces directly in the folder table. Hold Ctrl and click rows to add
 or remove individual files from the selection. Select all/none also applies to
-the currently filtered table rows. The Metric comparison pose sheets show each
-pose with its selected method values and ranks; Roadmap plots show the full
+the currently filtered table rows. Pose sheets show one pose per file with the
+selected ordering method and its value; Roadmap plots show the full
 transition graph. Choose the formats, displayed metrics, ordering and classifier.
 The preset is X=45°, Y=0°, rocking cutoff 0.20 mm, no sliding/braking loads,
 robust-only outputs. Kf workpieces appear in the same selection list as other

@@ -11,7 +11,7 @@ from PyQt6.QtCore import QProcess, QProcessEnvironment, QSettings, Qt, QUrl
 from PyQt6.QtGui import QDesktopServices, QFont, QFontDatabase
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox,
     QFileDialog, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox,
+    QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
     QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget, QHeaderView, QScrollArea)
 
 from .generate import GenerationConfig, OUTPUTS
@@ -153,10 +153,6 @@ class RoadmapGenerator(QMainWindow):
         physics_form.addRow(self.robust_only)
         physics_form.addRow(self.pose_sheets_include_metastable)
         physics_form.addRow(self.verified)
-        self.columns = QSpinBox(); self.columns.setRange(1, 12); self.columns.setValue(6)
-        self.per_sheet = QSpinBox(); self.per_sheet.setRange(1, 120); self.per_sheet.setValue(24)
-        physics_form.addRow("Pose-sheet columns", self.columns)
-        physics_form.addRow("Poses per sheet", self.per_sheet)
         self.existing = QComboBox()
         self.existing.addItem("Skip workpieces with existing output", "skip")
         self.existing.addItem("Overwrite selected formats only", "overwrite")
@@ -254,7 +250,7 @@ class RoadmapGenerator(QMainWindow):
             robust_only=self.robust_only.isChecked(),
             pose_sheets_include_metastable=self.pose_sheets_include_metastable.isChecked(),
             geometry_status="verified" if self.verified.isChecked() else "provisional",
-            existing=self.existing.currentData(), columns=self.columns.value(), poses_per_sheet=self.per_sheet.value())
+            existing=self.existing.currentData())
 
     def persist(self):
         self.settings.setValue("input", self.input_dir.text())
@@ -275,7 +271,7 @@ class RoadmapGenerator(QMainWindow):
                 if key in data:
                     for name, check in mapping.items(): check.setChecked(name in data[key])
             for widget, key in ((self.alpha, "alpha"), (self.beta, "beta"), (self.barrier, "rocking_threshold"),
-                                (self.cwsa_cutoff, "cwsa_threshold"), (self.columns, "columns"), (self.per_sheet, "poses_per_sheet")):
+                                (self.cwsa_cutoff, "cwsa_threshold")):
                 if key in data: widget.setValue(data[key])
             for widget, key in ((self.ranking, "ranking"), (self.classifier, "classifier"), (self.existing, "existing")):
                 index = widget.findData(data.get(key))

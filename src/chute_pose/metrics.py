@@ -13,6 +13,18 @@ def value_for(node, method):
     return node.classical_metrics.get(method, {}).get("raw_score")
 
 
+def metric_value_line(node, method):
+    """Label one pose with its ordering metric, without a display rank."""
+    if method not in METHOD_LABELS:
+        raise ValueError(f"Unknown display method: {method}")
+    value = value_for(node, method)
+    if value is None:
+        return f"{METHOD_LABELS[method]}: N/A"
+    precision = 3 if method in {"rocking", "cwsa"} else 6
+    units = " mm" if method == "rocking" else " sr/mm" if method in {"standard_csa", "crsa"} else ""
+    return f"{METHOD_LABELS[method]}: {value:.{precision}f}{units}"
+
+
 def metric_lines(roadmap, methods):
     output = {node.node_id: [] for node in roadmap.nodes}
     for method in methods:

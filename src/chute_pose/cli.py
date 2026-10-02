@@ -69,8 +69,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     render_parser.add_argument("mesh", type=Path)
     render_parser.add_argument("--output-dir", type=Path, required=True)
-    render_parser.add_argument("--poses-per-sheet", type=int, default=24)
-    render_parser.add_argument("--columns", type=int, default=6)
     render_parser.add_argument("--dpi", type=int, default=180)
 
     stability_parser = subparsers.add_parser(
@@ -396,8 +394,6 @@ def _render(args: argparse.Namespace) -> int:
     sheets = render_pose_sheets(
         args.mesh,
         args.output_dir,
-        poses_per_sheet=args.poses_per_sheet,
-        columns=args.columns,
         dpi=args.dpi,
     )
     print(f"Rendered {len(sheets)} contact sheets:")

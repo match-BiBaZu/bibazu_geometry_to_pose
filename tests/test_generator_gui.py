@@ -27,6 +27,8 @@ def test_gui_selection_defaults_and_settings(tmp_path):
     assert window.config().rocking_threshold == .2
     assert window.config().robust_only
     assert window.config().classifier == "rocking"
+    assert not hasattr(window, "columns")
+    assert not hasattr(window, "per_sheet")
     assert window.table.item(0, 0).checkState() == Qt.CheckState.Checked
     assert window.table.item(1, 0).checkState() == Qt.CheckState.Checked
     window.ranking.setCurrentIndex(window.ranking.findData("crsa"))

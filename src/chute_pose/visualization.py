@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from pathlib import Path
 from typing import Iterable, Mapping
 
@@ -30,26 +29,6 @@ def _contact_group(pose: ContactPose) -> str:
     floor = pose.floor_contact_topology.replace("+", "-plus-")
     wall = pose.wall_contact_topology.replace("+", "-plus-")
     return f"floor-{floor}_wall-{wall}"
-
-
-def _contact_label(topology: str) -> str:
-    exact = {
-        "point": "point",
-        "2-point": "2-point",
-        "3-point": "3-point",
-        "edge": "edge",
-        "edge+point": "edge + point",
-        "face": "face",
-        "face+point": "face + point",
-    }
-    if topology in exact:
-        return exact[topology]
-    return topology.replace("+", " + ")
-
-
-def _chunks(values: list[ContactPose], chunk_size: int) -> Iterable[list[ContactPose]]:
-    for start in range(0, len(values), chunk_size):
-        yield values[start : start + chunk_size]
 
 
 def _draw_reference_surfaces(ax, bounds: np.ndarray, margin: float) -> None:
@@ -198,13 +177,7 @@ def _draw_pose(
     ax.set_axis_off()
     draw_coordinate_axes(ax)
     if show_title:
-        ax.set_title(
-            f"{pose_label or f'Pose {pose.pose_id}'}\n"
-            f"Floor: {_contact_label(pose.floor_contact_topology)}, "
-            f"Wall: {_contact_label(pose.wall_contact_topology)}",
-            fontsize=8,
-            pad=1,
-        )
+        ax.set_title(pose_label or f"Pose {pose.pose_id}", fontsize=11, pad=8)
 
 
 def create_pose_thumbnails(
@@ -257,8 +230,6 @@ def render_pose_sheets(
     mesh_path: str | Path,
     output_dir: str | Path,
     *,
-    poses_per_sheet: int = 24,
-    columns: int = 6,
     dpi: int = 180,
     pose_ids: Iterable[int] | None = None,
     sheet_title: str = "Df1a: theoretical floor-wall contact poses",
@@ -268,10 +239,10 @@ def render_pose_sheets(
     formats: tuple[str, ...] = ("png",),
     metric_labels: Mapping[int, list[tuple[str, str]]] | None = None,
 ) -> tuple[RenderedSheet, ...]:
-    """Render the theoretical catalog as grouped, high-resolution PNG sheets."""
+    """Render one theoretical contact pose per SVG or PNG sheet."""
 
-    if poses_per_sheet <= 0 or columns <= 0 or dpi <= 0:
-        raise ValueError("poses_per_sheet, columns and dpi must be positive.")
+    if dpi <= 0:
+        raise ValueError("dpi must be positive.")
     if not formats or any(fmt not in {"png", "svg"} for fmt in formats):
         raise ValueError("Pose-sheet formats must be png and/or svg.")
 
@@ -305,57 +276,25 @@ def render_pose_sheets(
     destination.mkdir(parents=True, exist_ok=True)
     rendered: list[RenderedSheet] = []
 
-    groups: dict[str, list[ContactPose]] = {}
     for pose in poses:
-        groups.setdefault(_contact_group(pose), []).append(pose)
-
-    for group_name, group_poses in sorted(groups.items()):
-        for page_index, page_poses in enumerate(_chunks(group_poses, poses_per_sheet), start=1):
-            rows = math.ceil(len(page_poses) / columns)
-            extra = max((len((metric_labels or {}).get(p.pose_id, [])) for p in page_poses), default=0)
-            figure = plt.figure(figsize=(columns * 3.1, rows * (2.8 + 0.22 * extra)), facecolor="white")
-            first_pose = page_poses[0]
-            figure.suptitle(
-                f"{sheet_title}\n"
-                f"Floor: {_contact_label(first_pose.floor_contact_topology)} | "
-                f"Wall: {_contact_label(first_pose.wall_contact_topology)} | "
-                f"Page {page_index}",
-                fontsize=14,
-            )
-            sheet_grid = figure.add_gridspec(rows, columns)
-            for plot_index, pose in enumerate(page_poses, start=1):
-                cell = sheet_grid[(plot_index - 1) // columns, (plot_index - 1) % columns]
-                if metric_labels:
-                    cell_grid = cell.subgridspec(2, 1, height_ratios=(4, max(1, 0.38 * extra)), hspace=0)
-                    axis = figure.add_subplot(cell_grid[0], projection="3d", computed_zorder=False)
-                    label_axis = figure.add_subplot(cell_grid[1]); label_axis.set_axis_off()
-                else:
-                    axis = figure.add_subplot(cell, projection="3d", computed_zorder=False)
-                _draw_pose(
-                    axis,
-                    pose,
-                    mesh_vertices_centered,
-                    mesh_faces,
-                    pose_label=(pose_labels or {}).get(pose.pose_id),
-                )
-                for line_index, (text, color) in enumerate((metric_labels or {}).get(pose.pose_id, [])):
-                    label_axis.text(0.5, 0.95 - line_index / (extra + 0.3), text,
-                                    transform=label_axis.transAxes, ha="center", va="top", fontsize=7, color=color)
-
-            figure.text(
-                0.01,
-                0.008,
-                "Green/circle: floor contacts and mesh edges | "
-                "Orange/diamond: wall contacts and mesh edges | "
-                "Red/square: corner contact | Corner line = X axis | Red arrow = +X downhill",
-                fontsize=9,
-            )
-            figure.tight_layout(rect=(0.0, 0.065 if metric_labels else 0.025, 1.0, 0.95))
-            for fmt in formats:
-                filename = f"{filename_prefix}_{group_name}_page-{page_index:02d}.{fmt}"
-                path = destination / filename
-                figure.savefig(path, dpi=dpi, bbox_inches="tight")
-                rendered.append(RenderedSheet(path=path, pose_ids=tuple(p.pose_id for p in page_poses), contact_group=group_name))
-            plt.close(figure)
+        figure = plt.figure(figsize=(5, 4.5), facecolor="white")
+        figure.suptitle(sheet_title, fontsize=14)
+        axis = figure.add_subplot(111, projection="3d", computed_zorder=False)
+        _draw_pose(
+            axis,
+            pose,
+            mesh_vertices_centered,
+            mesh_faces,
+            pose_label=(pose_labels or {}).get(pose.pose_id),
+        )
+        metric_text = [text for text, _ in (metric_labels or {}).get(pose.pose_id, [])]
+        if metric_text:
+            axis.set_title("\n".join((axis.get_title(), *metric_text)), fontsize=11, pad=8)
+        figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.93))
+        for fmt in formats:
+            path = destination / f"{filename_prefix}_pose-{pose.pose_id:04d}.{fmt}"
+            figure.savefig(path, dpi=dpi, bbox_inches="tight")
+            rendered.append(RenderedSheet(path=path, pose_ids=(pose.pose_id,), contact_group=_contact_group(pose)))
+        plt.close(figure)
 
     return tuple(rendered)

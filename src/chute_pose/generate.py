@@ -14,15 +14,13 @@ from pathlib import Path
 import tempfile
 import traceback
 
-from .metrics import METHOD_LABELS, metric_lines
+from .metrics import METHOD_LABELS, metric_value_line
 from .roadmap import (build_pose_roadmap, render_pose_roadmap, save_roadmap_graphml,
                       save_roadmap_json, save_roadmap_yaml)
 from .visualization import render_pose_sheets
 
 OUTPUTS = {"yaml": "YAML", "json": "JSON", "graphml": "GraphML",
            "roadmap_svg": "Roadmap SVG", "roadmap_png": "Roadmap PNG",
-           "comparison_svg": "Metric comparison pose sheets SVG",
-           "comparison_png": "Metric comparison pose sheets PNG",
            "poses_svg": "Pose sheets SVG", "poses_png": "Pose sheets PNG"}
 
 
@@ -42,8 +40,6 @@ class GenerationConfig:
     pose_sheets_include_metastable: bool = False
     geometry_status: str = "provisional"
     existing: str = "skip"
-    columns: int = 6
-    poses_per_sheet: int = 24
 
     def validate(self):
         if not self.outputs or set(self.outputs) - OUTPUTS.keys():
@@ -67,8 +63,8 @@ class GenerationConfig:
             raise ValueError("Enter a positive experimental CSA/CRSA raw-score cutoff in sr/mm; no paper-standard cutoff exists.")
         if self.existing not in {"skip", "overwrite"} or self.geometry_status not in {"provisional", "verified"}:
             raise ValueError("Invalid output policy or CAD status.")
-        if self.columns < 1 or self.poses_per_sheet < 1 or not self.output_dir.strip():
-            raise ValueError("Choose an output folder and positive sheet dimensions.")
+        if not self.output_dir.strip():
+            raise ValueError("Choose an output folder.")
 
 
 def robust_subset(roadmap):
@@ -121,31 +117,20 @@ def generate_one(mesh: Path, config: GenerationConfig, progress=lambda message: 
         if roadmap_formats:
             render_pose_roadmap(roadmap, staging / f"{mesh.stem}_roadmap", formats=roadmap_formats,
                                 display_methods=config.methods, rank_reference=full, stable_only=config.robust_only)
-        comparison_formats = tuple(fmt for fmt in ("svg", "png") if f"comparison_{fmt}" in config.outputs)
         pose_formats = tuple(fmt for fmt in ("svg", "png") if f"poses_{fmt}" in config.outputs)
         sheet_roadmap = full if config.pose_sheets_include_metastable else robust_subset(full)
-        sheet_products = (
-            ("comparison_pose_sheets", "comparison", "Metric comparison", comparison_formats),
-            ("pose_sheets", "poses", "Pose sheets", pose_formats),
-        )
-        if sheet_roadmap.nodes:
-            lines = metric_lines(full, config.methods)
+        if sheet_roadmap.nodes and pose_formats:
             labels = {
-                n.original_catalog_pose_id: (
-                    f"Pose {n.node_id} ({n.kind})" if config.pose_sheets_include_metastable
-                    else f"Pose {n.node_id}"
-                )
+                n.original_catalog_pose_id: f"Pose {n.node_id}"
                 for n in sheet_roadmap.nodes
             }
             sheet_mode = "robust_and_metastable" if config.pose_sheets_include_metastable else "robust_only"
-            class_title = "robust and metastable" if config.pose_sheets_include_metastable else "robust only"
-            for folder_name, filename_suffix, product_title, formats in sheet_products:
-                if formats:
-                    render_pose_sheets(mesh, staging / folder_name / sheet_mode, pose_ids=labels, pose_labels=labels,
-                        metric_labels={n.original_catalog_pose_id: lines[n.node_id] for n in sheet_roadmap.nodes},
-                        formats=formats, columns=config.columns, poses_per_sheet=config.poses_per_sheet,
-                        filename_prefix=f"{mesh.stem}_{filename_suffix}",
-                        sheet_title=f"{mesh.stem}: {product_title}; {class_title}; X={config.alpha:g}, Y={config.beta:g}")
+            render_pose_sheets(mesh, staging / "pose_sheets" / sheet_mode, pose_ids=labels, pose_labels=labels,
+                metric_labels={n.original_catalog_pose_id: [(metric_value_line(n, config.ranking), "black")]
+                               for n in sheet_roadmap.nodes},
+                formats=pose_formats,
+                filename_prefix=f"{mesh.stem}_poses",
+                sheet_title=mesh.stem)
         for source in sorted(staging.rglob("*")):
             if source.is_file():
                 target = destination / source.relative_to(staging)

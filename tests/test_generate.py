@@ -6,7 +6,7 @@ import pytest
 
 from chute_pose.generate import GenerationConfig, generate_one, robust_subset
 from chute_pose.roadmap import build_pose_roadmap, PoseRoadmap
-from chute_pose.metrics import metric_lines
+from chute_pose.metrics import metric_lines, metric_value_line
 
 PART = Path(__file__).resolve().parents[1] / "Werkstücke_STL_grob" / "Df1a.STL"
 
@@ -55,6 +55,9 @@ def test_robust_filter_keeps_valid_edges_and_metric_identity(roadmap):
     lines = metric_lines(roadmap, ("rocking", "standard_csa", "crsa"))
     assert all(len(v) == 3 for v in lines.values())
     assert all("rank" in text or "N/A" in text for values in lines.values() for text, color in values)
+    label = metric_value_line(roadmap.nodes[0], "rocking")
+    assert label.startswith("Rocking: ") and label.endswith(" mm")
+    assert "rank" not in label
 
 
 def test_new_ranking_keeps_ids_and_requires_selected_threshold(roadmap):
